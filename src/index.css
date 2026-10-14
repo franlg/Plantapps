@@ -1,0 +1,81 @@
+@import 'tailwindcss';
+
+/* Permite forzar el modo oscuro con una clase en <html>, además de seguir al sistema. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  /* Verde planta */
+  --color-brand-50: #f2f8f3;
+  --color-brand-100: #e0efe3;
+  --color-brand-200: #c2dfc8;
+  --color-brand-300: #95c79f;
+  --color-brand-400: #63a872;
+  --color-brand-500: #428c54;
+  --color-brand-600: #317043;
+  --color-brand-700: #295a37;
+  --color-brand-800: #23482f;
+  --color-brand-900: #1e3c28;
+
+  /* Tierra / arcilla para acentos */
+  --color-terra-100: #f7ece3;
+  --color-terra-300: #ddb895;
+  --color-terra-500: #b9834f;
+  --color-terra-700: #8a5a31;
+
+  /* Semáforo de estado */
+  --color-ok-500: #3f9a5f;
+  --color-alerta-500: #d99022;
+  --color-peligro-500: #cc4b4b;
+
+  --radius-xl2: 1.25rem;
+}
+
+:root {
+  color-scheme: light;
+  --surface: #f6f8f4;
+  --surface-raised: #ffffff;
+  --border-soft: #e2e8dd;
+  --text: #16211a;
+  --text-muted: #5d6b62;
+}
+
+.dark {
+  color-scheme: dark;
+  --surface: #10150f;
+  --surface-raised: #1a2118;
+  --border-soft: #2b3527;
+  --text: #eef3ec;
+  --text-muted: #9aa89c;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--surface);
+    color: var(--text);
+    font-family: var(--font-sans);
+    margin: 0;
+    /* Evita el rebote de scroll en móvil. */
+    overscroll-behavior-y: none;
+  }
+
+  /* Elimina el retardo de 300 ms al tocar y el highlight azul en móvil. */
+  button,
+  a {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+}
