@@ -10,4 +10,4 @@ import { createMemoryDb } from './memory'
 export const db: Db = createMemoryDb()
 
 export * from './context'
-export * from './memory'
+export { createMemoryDb } from './memory'
