@@ -134,6 +134,29 @@ describe('Db en memoria (cumplimiento del contrato)', () => {
     expect(avisos).toBe(1)
   })
 
+  it('persiste la miniatura y las medidas que le pasan a photos.put', async () => {
+    const db = createMemoryDb()
+    const grande = new Blob(['x'.repeat(100)], { type: 'image/jpeg' })
+    const pequena = new Blob(['y'.repeat(10)], { type: 'image/jpeg' })
+
+    const guardada = await db.photos.put(grande, { thumb: pequena, width: 1280, height: 960 })
+
+    expect(guardada.thumb.size).toBe(10)
+    expect(guardada.width).toBe(1280)
+    expect(guardada.height).toBe(960)
+    expect((await db.photos.get(guardada.id))?.thumb.size).toBe(10)
+  })
+
+  it('si no se pasan medidas, usa el propio blob como miniatura', async () => {
+    const db = createMemoryDb()
+    const blob = new Blob(['z'.repeat(50)], { type: 'image/jpeg' })
+
+    const guardada = await db.photos.put(blob)
+
+    expect(guardada.thumb.size).toBe(50)
+    expect(guardada.width).toBe(0)
+  })
+
   it('guarda los ajustes y los devuelve con los valores por defecto', async () => {
     const db = createMemoryDb()
     expect((await db.settings.get()).modelo).toBeTruthy()

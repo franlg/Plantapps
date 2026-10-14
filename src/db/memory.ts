@@ -130,14 +130,14 @@ export function createMemoryDb(): Db {
     async get(id) {
       return photos.get(id)
     },
-    async put(blob: Blob) {
+    async put(blob: Blob, extra) {
       const photo: StoredPhoto = {
         id: newId(),
         blob,
-        thumb: blob,
+        thumb: extra?.thumb ?? blob,
         mime: blob.type || 'image/jpeg',
-        width: 0,
-        height: 0,
+        width: extra?.width ?? 0,
+        height: extra?.height ?? 0,
         bytes: blob.size,
         creadoEn: nowIso(),
       }

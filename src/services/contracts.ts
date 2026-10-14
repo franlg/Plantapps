@@ -45,8 +45,12 @@ export interface EventRepo {
 
 export interface PhotoRepo {
   get(id: ID): Promise<StoredPhoto | undefined>
-  /** Almacena una foto ya comprimida y genera su miniatura. */
-  put(blob: Blob): Promise<StoredPhoto>
+  /**
+   * Almacena una foto ya comprimida.
+   * `extra` permite persistir también la miniatura y las medidas reales; si no se
+   * pasan, la miniatura es el propio blob y width/height valen 0.
+   */
+  put(blob: Blob, extra?: { thumb?: Blob; width?: number; height?: number }): Promise<StoredPhoto>
   remove(id: ID): Promise<void>
   /** ObjectURL para mostrar la imagen. Hay que llamar a release() cuando se deja de usar. */
   url(id: ID): Promise<string | undefined>
