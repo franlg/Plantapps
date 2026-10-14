@@ -1,0 +1,203 @@
+/*
+ * Clases reutilizables del sistema de diseño.
+ * Se importan desde `src/index.css` (ver el `@import` de arriba del todo).
+ *
+ * Regla de oro: todo lo que se pueda pulsar con el pulgar mide 44 px o más.
+ * Tailwind pone sus utilidades en la capa `utilities`, que gana a `components`,
+ * así que estas clases se pueden sobrescribir con `className="..."`.
+ */
+
+@layer components {
+  /* ---------------------------------------------------------------- */
+  /* Objetivos táctiles                                                */
+  /* ---------------------------------------------------------------- */
+
+  /* Altura mínima de 44 px (recomendación de accesibilidad táctil). */
+  .tap-target {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-height: var(--size-touch);
+    touch-action: manipulation;
+  }
+
+  /* Para iconos solos: 44x44 exactos y fáciles de acertar. */
+  .tap-icono {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--size-touch);
+    height: var(--size-touch);
+    border-radius: 9999px;
+    touch-action: manipulation;
+  }
+
+  /* Zona segura inferior (barra de gestos de Android / home indicator). */
+  .area-segura-abajo {
+    padding-bottom: calc(var(--safe-bottom) + 0.75rem);
+  }
+
+  /* Margen extra para el contenido que queda debajo de una barra fija. */
+  .margen-seguro-abajo {
+    margin-bottom: var(--safe-bottom);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Superficies                                                       */
+  /* ---------------------------------------------------------------- */
+
+  .superficie {
+    background-color: var(--surface-raised);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-xl2);
+  }
+
+  /* Franja de color a la izquierda, para "marcar" una fila. */
+  .superficie-faja {
+    border-left: 4px solid var(--color-brand-500);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Foco visible                                                      */
+  /* ---------------------------------------------------------------- */
+
+  /* El foco solo se dibuja con teclado: no molesta al usuario en táctil. */
+  .foco-visible:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Campos de formulario                                              */
+  /* ---------------------------------------------------------------- */
+
+  /*
+   * 16 px de tamaño de letra: si es menor, iOS/Android hacen zoom
+   * al enfocar y la caja queda medio fuera de la pantalla.
+   */
+  .campo {
+    display: block;
+    width: 100%;
+    min-height: var(--size-touch);
+    padding: 0.625rem 0.875rem;
+    border: 1px solid var(--border-soft);
+    border-radius: 0.875rem;
+    background-color: var(--surface-raised);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 1rem;
+    line-height: 1.5;
+    transition:
+      border-color 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+
+  .campo::placeholder {
+    color: var(--text-muted);
+    opacity: 1;
+  }
+
+  .campo:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 1px;
+    border-color: var(--color-brand-500);
+  }
+
+  .campo:disabled,
+  .campo[aria-disabled='true'] {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .campo[aria-invalid='true'] {
+    border-color: var(--borde-error);
+  }
+
+  .campo[aria-invalid='true']:focus-visible {
+    outline-color: var(--borde-error);
+  }
+
+  .campo-textarea {
+    min-height: 6rem;
+    resize: vertical;
+  }
+
+  /*
+   * Select con flecha propia: `appearance: none` quita la nativa, así que
+   * hay que dibujarla. Son dos imágenes, una por tema, para que se vea bien.
+   */
+  .campo-select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 2.5rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%235d6b62' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 7.5 10 12.5 15 7.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 1.25rem 1.25rem;
+  }
+
+  .dark .campo-select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%239aa89c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 7.5 10 12.5 15 7.5'/%3E%3C/svg%3E");
+  }
+
+  /* El icono del calendario nativo es negro sobre fondo oscuro en algunos navegadores. */
+  .campo[type='date']::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.6;
+  }
+
+  .dark .campo[type='date']::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+    opacity: 0.7;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Hoja inferior (Sheet)                                              */
+  /* ---------------------------------------------------------------- */
+
+  .hoja-fondo {
+    animation: hoja-aparece 0.2s ease-out;
+  }
+
+  .hoja-panel {
+    animation: hoja-sube 0.24s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  /* Asa de arrastre decorativa, solo visual. */
+  .hoja-asa {
+    display: block;
+    width: 2.5rem;
+    height: 0.25rem;
+    border-radius: 9999px;
+    background-color: var(--border-soft);
+  }
+}
+
+@keyframes hoja-aparece {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hoja-sube {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Si el usuario pide menos movimiento, la hoja aparece sin animarse. */
+@media (prefers-reduced-motion: reduce) {
+  .hoja-fondo,
+  .hoja-panel {
+    animation: none;
+  }
+}

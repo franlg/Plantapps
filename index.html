@@ -1,12 +1,58 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>plantapps</title>
+    <!-- viewport-fit=cover: la app dibuja hasta debajo de la barra de estado. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Plantapps</title>
+    <meta
+      name="description"
+      content="Control de plantas de casa: cuándo las plantaste, cuándo las regaste y análisis con IA para saber si toca regar. Funciona sin internet."
+    />
+
+    <!-- Tema: el mismo verde de la marca en claro y el fondo oscuro de la app en oscuro. -->
+    <meta name="theme-color" content="#23482f" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#10150f" />
+    <meta name="color-scheme" content="light dark" />
+
+    <!-- Instalable: manifiesto, icono y modo pantalla completa. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <meta name="application-name" content="Plantapps" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Plantapps" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+    <!--
+      Aplica el tema ANTES de pintar el primer píxel, o si no la app daría un
+      fogonazo blanco al abrirla en modo oscuro.
+      Clave en localStorage: 'tema' con 'claro', 'oscuro' o 'auto' (o vacío = el
+      que elija el sistema). La clase 'dark' en <html> la usa src/index.css.
+    -->
+    <script>
+      ;(function () {
+        try {
+          var t = localStorage.getItem('tema')
+          var forzado = t === 'oscuro' || t === 'dark'
+          var claro = t === 'claro' || t === 'light'
+          var sistema = !forzado && !claro && window.matchMedia('(prefers-color-scheme: dark)').matches
+          document.documentElement.classList.toggle('dark', forzado || sistema)
+        } catch (e) {
+          /* localStorage bloqueado: se usa el tema del sistema. */
+        }
+      })()
+    </script>
   </head>
   <body>
+    <noscript>
+      <p style="font-family: system-ui; padding: 2rem">
+        Plantapps necesita JavaScript para funcionar. Actívalo en los ajustes del navegador y vuelve a cargar
+        la página.
+      </p>
+    </noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

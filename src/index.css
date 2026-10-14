@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import './ui/theme.css';
 
 /* Permite forzar el modo oscuro con una clase en <html>, además de seguir al sistema. */
 @custom-variant dark (&:where(.dark, .dark *));
@@ -25,12 +26,43 @@
   --color-terra-500: #b9834f;
   --color-terra-700: #8a5a31;
 
-  /* Semáforo de estado */
+  /* Semáforo de estado: ok */
+  --color-ok-100: #dcf3e3;
+  --color-ok-200: #b6e4c5;
+  --color-ok-300: #7ecb97;
+  --color-ok-400: #57ac72;
   --color-ok-500: #3f9a5f;
+  --color-ok-600: #2f7d4a;
+  --color-ok-700: #256238;
+  --color-ok-800: #1d4b2b;
+  --color-ok-900: #14361f;
+
+  /* Semáforo de estado: alerta */
+  --color-alerta-100: #fdf0d8;
+  --color-alerta-200: #f9dda6;
+  --color-alerta-300: #f2c471;
+  --color-alerta-400: #e5a93f;
   --color-alerta-500: #d99022;
+  --color-alerta-600: #b57316;
+  --color-alerta-700: #8f5611;
+  --color-alerta-800: #6d400e;
+  --color-alerta-900: #4d2d0a;
+
+  /* Semáforo de estado: peligro */
+  --color-peligro-100: #fbe3e3;
+  --color-peligro-200: #f6c4c4;
+  --color-peligro-300: #ea9696;
+  --color-peligro-400: #d96d6d;
   --color-peligro-500: #cc4b4b;
+  --color-peligro-600: #b03a3a;
+  --color-peligro-700: #8c2d2d;
+  --color-peligro-800: #6b2222;
+  --color-peligro-900: #4c1919;
 
   --radius-xl2: 1.25rem;
+
+  /* Objetivo táctil mínimo recomendado (44 px). */
+  --size-touch: 2.75rem;
 }
 
 :root {
@@ -40,6 +72,11 @@
   --border-soft: #e2e8dd;
   --text: #16211a;
   --text-muted: #5d6b62;
+  /* Verde oscuro: se ve bien sobre cualquier superficie clara. */
+  --focus-ring: #317043;
+  --borde-error: #b03a3a;
+  /* Zona segura inferior del móvil. 0 en navegadores de escritorio. */
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .dark {
@@ -49,20 +86,38 @@
   --border-soft: #2b3527;
   --text: #eef3ec;
   --text-muted: #9aa89c;
+  /* Verde claro: contrasta sobre el fondo oscuro. */
+  --focus-ring: #95c79f;
+  --borde-error: #ea9696;
 }
 
 @layer base {
   html {
     -webkit-text-size-adjust: 100%;
+    /* `dvh` evita que la barra de URL de Android corte el contenido. */
+    min-height: 100dvh;
+    background-color: var(--surface);
+    /* El scroll "pega" al documento: sin rebote ni efecto de "filtrado". */
+    overscroll-behavior-y: none;
   }
 
   body {
+    min-height: 100dvh;
     background-color: var(--surface);
     color: var(--text);
     font-family: var(--font-sans);
     margin: 0;
     /* Evita el rebote de scroll en móvil. */
     overscroll-behavior-y: none;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* El foco se dibuja solo cuando se navega con teclado, para no ensuciar
+     la pantalla táctil. Cualquier elemento interactivo lo hereda. */
+  :focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 2px;
   }
 
   /* Elimina el retardo de 300 ms al tocar y el highlight azul en móvil. */
@@ -77,5 +132,62 @@
   textarea {
     font: inherit;
     color: inherit;
+  }
+
+  /* Los <select> nativos usan los mismos colores que el resto. */
+  select {
+    color-scheme: inherit;
+  }
+
+  ::selection {
+    background-color: var(--color-brand-200);
+    color: var(--color-brand-900);
+  }
+
+  .dark ::selection {
+    background-color: var(--color-brand-700);
+    color: var(--color-brand-50);
+  }
+
+  /* Los números de teléfono y fechas con guiones se leen mejor sin separación. */
+  [data-numerico] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Scrollbar discreta en escritorio; en móvil no se ve. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-soft) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--border-soft);
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--text-muted);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
