@@ -50,7 +50,7 @@ export const ESQUEMA_ANALISIS: z.ZodType<AiAnalysisDraft> = z.object({
   maceta: z
     .string()
     .trim()
-    .nullable()
+    .nullish()
     .describe('Tamaño de maceta que ve la IA (ej. "15 cm"). Pon null si no tienes clara el tamaño o la foto no lo muestra.'),
   problema: z.string().optional().describe('El problema detectado en una frase, o "Ninguno"'),
   gravedad: z.enum(GRAVEDADES).optional().describe('Gravedad del problema: ninguna, leve, moderada o grave'),

@@ -137,6 +137,7 @@ describe('responseSchemaGemini', () => {
       'accionPrincipal',
       'regar',
       'frecuenciaRiegoDias',
+      'maceta',
       'problema',
       'gravedad',
       'sintomas',
@@ -161,8 +162,12 @@ describe('responseSchemaGemini', () => {
   })
 
   it('solo exige en required los campos que no admiten null, en el orden de properties', () => {
+    // frecuenciaRiegoDias y maceta son nullish: el modelo puede omitirlos.
     expect(esquema.required).not.toContain('frecuenciaRiegoDias')
-    expect(esquema.required).toEqual(Object.keys(esquema.properties).filter((c) => c !== 'frecuenciaRiegoDias'))
+    expect(esquema.required).not.toContain('maceta')
+    expect(esquema.required).toEqual(
+      Object.keys(esquema.properties).filter((c) => c !== 'frecuenciaRiegoDias' && c !== 'maceta'),
+    )
   })
 
   it('es serializable: el cuerpo de la petición no puede romperse', () => {
