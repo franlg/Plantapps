@@ -59,7 +59,8 @@ const PREGUNTAS = `1. ¿Hay que regar ahora? Usa el estado del sustrato que se v
 2. ¿Cada cuántos días conviene regarla a partir de ahora?
 3. ¿Hay que trasplantar? Mira si las raíces asoman por el drenaje, si la planta está ladeada o si la maceta parece pequeña.
 4. ¿Se ve algún problema? Describe cuál y cuánto es de grave (ninguna, leve, moderada o grave).
-5. ¿Qué signos o síntomas concretos se ven en la foto?`
+5. ¿Qué signos o síntomas concretos se ven en la foto?
+6. ¿Aproximadamente, de qué tamaño es la maceta que se ve en la foto? (puedes responder con un número en centímetros, o "sin datos" si no tienes clara la tamaño. Si no estás seguro, pon "baja" en confianza.)`
 
 const REGLAS = `- Responde ÚNICAMENTE con un objeto JSON válido que cumpla el esquema de la respuesta. Nada de texto antes ni después, ni comentarios.
 - Escribe todo en español.

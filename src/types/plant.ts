@@ -13,6 +13,8 @@ export interface Plant {
   especie?: string
   /** Fecha en la que la planté, ISO `YYYY-MM-DD`. Opcional. */
   fechaPlantado?: string
+  /** Fecha en la que se realizó el último riego, ISO `YYYY-MM-DD`. Opcional. */
+  ultimoRiego?: string
   /** Objetivo de días entre riegos. Si no lo pongo, se calcula a partir de la especie. */
   frecuenciaRiegoDias?: number
   /** Texto libre, ej. "maceta 18 cm", "5 L de sustrato". */
@@ -32,7 +34,7 @@ export interface Plant {
 
 /** Campos que puede rellenar el usuario al crear una planta. */
 export type NewPlant = Partial<Omit<Plant, 'id' | 'creadoEn' | 'actualizadoEn' | 'archivada'>> &
-  Pick<Plant, 'nombre'>
+  Pick<Plant, 'nombre' | 'ultimoRiego' | 'fechaPlantado'>
 
 export const LUZ_LABELS: Record<Luz, string> = {
   sol_directo: 'Sol directo',

@@ -47,6 +47,11 @@ export const ESQUEMA_ANALISIS: z.ZodType<AiAnalysisDraft> = z.object({
     .max(MAX_FRECUENCIA)
     .nullable()
     .describe('Días entre riegos que recomienda, o null si no se puede estimar'),
+  maceta: z
+    .string()
+    .trim()
+    .nullable()
+    .describe('Tamaño de maceta que ve la IA (ej. "15 cm"). Pon null si no tienes clara el tamaño o la foto no lo muestra.'),
   problema: z.string().optional().describe('El problema detectado en una frase, o "Ninguno"'),
   gravedad: z.enum(GRAVEDADES).optional().describe('Gravedad del problema: ninguna, leve, moderada o grave'),
   sintomas: z.array(z.string()).describe('Signos visibles en la foto: "hojas amarillas en la base"'),
@@ -92,6 +97,12 @@ export function responseSchemaGemini(): object {
         nullable: true,
         description:
           'Cada cuántos días conviene regarla, entre 1 y 90. Usa null si no puedes estimarlo con la foto y los datos.',
+      },
+      maceta: {
+        type: 'string',
+        nullable: true,
+        description:
+          'Tamaño de maceta que ve la IA en la foto (ej. "15 cm"). Usa null si no tienes clara el tamaño o la foto no lo muestra.',
       },
       problema: {
         type: 'string',
