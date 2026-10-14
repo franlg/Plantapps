@@ -1,0 +1,232 @@
+import { AiError } from '@/types'
+import { responseSchemaGemini } from './schema'
+
+/**
+ * Cliente mínimo de la API de Gemini.
+ *
+ * Solo hace falta una llamada (`generateContent` con imagen), así que no se
+ * monta ningún SDK: un `fetch` con cabeceras, base64 y traducción de errores.
+ * La clave viaja en la cabecera `x-goog-api-key` y NUNCA se escribe en el código,
+ * ni en los logs, ni en los mensajes de error que ve el usuario.
+ */
+
+const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
+
+/** En móvil, 30 s es de sobra; si no responde, es que no va a responder. */
+export const TIMEOUT_MS = 30_000
+
+const TEMPERATURA = 0.3
+
+export interface LlamarGeminiParams {
+  apiKey: string
+  modelo: string
+  prompt: string
+  /** Foto ya comprimida (JPEG o PNG). */
+  foto: Blob
+}
+
+export interface LlamarGeminiResultado {
+  /** Texto que devuelve el modelo (el JSON, normalmente). */
+  texto: string
+  /** Cuerpo crudo de la respuesta, para depurar. */
+  raw: unknown
+}
+
+/** `true` si el valor es un objeto plano: así se puede leer sin castear a `any`. */
+function esRegistro(valor: unknown): valor is Record<string, unknown> {
+  return typeof valor === 'object' && valor !== null && !Array.isArray(valor)
+}
+
+/** Nombre del error si lo tiene (`AbortError`, `TypeError`...). */
+function nombreDeError(error: unknown): string {
+  return esRegistro(error) && typeof error.name === 'string' ? error.name : ''
+}
+
+/**
+ * Convierte el Blob en base64 por trozos.
+ * `String.fromCharCode(...bytes)` entero revienta la pila con fotos reales
+ * (varios MB), así que se recorre en bloques de 32 KB.
+ */
+export async function blobABase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  const TROZO = 0x8000
+
+  let binario = ''
+  for (let i = 0; i < bytes.length; i += TROZO) {
+    binario += String.fromCharCode(...bytes.subarray(i, i + TROZO))
+  }
+
+  return btoa(binario)
+}
+
+/** Texto del modelo: concatena los `text` de todos los `parts` de todos los candidatos. */
+function extraerTexto(cuerpo: unknown): string | null {
+  if (!esRegistro(cuerpo) || !Array.isArray(cuerpo.candidates) || cuerpo.candidates.length === 0) return null
+
+  const textos: string[] = []
+
+  for (const candidato of cuerpo.candidates as unknown[]) {
+    if (!esRegistro(candidato) || !esRegistro(candidato.content)) continue
+    const partes = candidato.content.parts
+    if (!Array.isArray(partes)) continue
+
+    for (const parte of partes as unknown[]) {
+      if (esRegistro(parte) && typeof parte.text === 'string') textos.push(parte.text)
+    }
+  }
+
+  return textos.length > 0 ? textos.join('') : null
+}
+
+/** Detalle legible del error de la API, sin filtrar nada sensible. */
+function detalleDeError(cuerpo: unknown): string {
+  if (typeof cuerpo === 'string') return cuerpo.slice(0, 300)
+  if (esRegistro(cuerpo) && esRegistro(cuerpo.error) && typeof cuerpo.error.message === 'string') {
+    return cuerpo.error.message.slice(0, 300)
+  }
+  return ''
+}
+
+/** Traduce un `Response` con error a un `AiError` de la app. */
+function errorDeHttp(status: number, detalle: string): AiError {
+  const limpio = detalle.trim()
+
+  switch (status) {
+    case 429:
+      return new AiError(
+        limpio
+          ? `Has agotado la cuota gratuita de Gemini: ${limpio}`
+          : 'Has agotado la cuota gratuita de Gemini. Espera unos minutos y vuelve a intentarlo.',
+        'cuota',
+      )
+    case 404:
+      return new AiError(
+        limpio && /not found|not supported|no encontrado/i.test(limpio)
+          ? `Ese modelo no está disponible para tu clave: ${limpio}`
+          : 'Ese modelo no está disponible para tu clave. Cámbialo en Ajustes.',
+        'modelo_no_disponible',
+      )
+    case 502:
+    case 503:
+    case 504:
+      // Gemini responde así cuando el modelo está saturado ("high demand"). Verificado
+      // el 14/10/2026: gemini-3.8-flash devolvía 503 con una clave del nivel gratuito.
+      // Se clasifica como "modelo no disponible" para que la app reintente con el de respaldo.
+      return new AiError(
+        status === 503
+          ? 'Ese modelo está saturado ahora mismo. Se probará con el modelo de respaldo.'
+          : 'Gemini no ha podido atender la petición. Se probará con el modelo de respaldo.',
+        'modelo_no_disponible',
+      )
+    case 400:
+      return new AiError(
+        `Gemini rechazó la petición (la foto o el modelo no valen): ${limpio || 'revisa el modelo en Ajustes'}`,
+        'desconocido',
+      )
+    case 401:
+    case 403:
+      return new AiError(
+        'La clave de la API no es válida o no tiene permiso para usar Gemini. Revísala en Ajustes.',
+        'desconocido',
+      )
+    default:
+      return new AiError(
+        `Gemini ha devuelto un error ${status}${limpio ? `: ${limpio}` : ''}`,
+        'desconocido',
+      )
+  }
+}
+
+/**
+ * Hace una llamada a Gemini y devuelve el texto de la respuesta.
+ * Lanza siempre `AiError` con un código de @/types para que la interfaz sepa
+ * qué mensaje mostrar.
+ */
+export async function llamarGemini({
+  apiKey,
+  modelo,
+  prompt,
+  foto,
+}: LlamarGeminiParams): Promise<LlamarGeminiResultado> {
+  const url = `${API_BASE}/${encodeURIComponent(modelo)}:generateContent`
+
+  const cuerpo = {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: prompt },
+          {
+            inline_data: {
+              mime_type: foto.type || 'image/jpeg',
+              data: await blobABase64(foto),
+            },
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema: responseSchemaGemini(),
+      temperature: TEMPERATURA,
+    },
+  }
+
+  const controlador = new AbortController()
+  const temporizador = setTimeout(() => controlador.abort(), TIMEOUT_MS)
+
+  let respuesta: Response
+  try {
+    respuesta = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify(cuerpo),
+      signal: controlador.signal,
+    })
+  } catch (error) {
+    // El AbortError del temporizador cae aquí también: misma causa para el usuario.
+    if (nombreDeError(error) === 'AbortError') {
+      throw new AiError(
+        `Gemini no ha respondido en ${TIMEOUT_MS / 1000} segundos. Revisa la conexión y vuelve a intentarlo.`,
+        'sin_red',
+      )
+    }
+    throw new AiError('No se ha podido conectar con Gemini. Revisa la conexión a internet.', 'sin_red')
+  } finally {
+    clearTimeout(temporizador)
+  }
+
+  const textoRespuesta = await respuesta.text().catch(() => '')
+  let cuerpoRespuesta: unknown = null
+
+  if (textoRespuesta) {
+    try {
+      cuerpoRespuesta = JSON.parse(textoRespuesta)
+    } catch {
+      cuerpoRespuesta = textoRespuesta
+    }
+  }
+
+  if (!respuesta.ok) {
+    const detalle = detalleDeError(cuerpoRespuesta)
+    // Hay APIs que responden 400 con un 404 en el cuerpo (modelo inexistente).
+    if (/model .*not found|is not found for API version|models\/.+ is not supported/i.test(detalle)) {
+      throw errorDeHttp(404, detalle)
+    }
+    throw errorDeHttp(respuesta.status, detalle)
+  }
+
+  const texto = extraerTexto(cuerpoRespuesta)
+
+  if (texto === null) {
+    throw new AiError(
+      'Gemini no ha devuelto ningún análisis de la foto. Vuelve a intentarlo con otra imagen.',
+      'respuesta_invalida',
+    )
+  }
+
+  return { texto, raw: cuerpoRespuesta }
+}

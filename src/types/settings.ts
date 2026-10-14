@@ -15,9 +15,19 @@ export interface AppSettings {
 }
 
 export const SETTINGS_POR_DEFECTO: AppSettings = {
-  modelo: 'gemini-3.8-flash',
+  // Verificados contra la API el 14/10/2026 con una clave del nivel gratuito:
+  //   gemini-3.8-flash devolvía 503 "high demand", así que se usa 3.6-flash como principal.
+  modelo: 'gemini-3.6-flash',
+  // El más estable y barato del nivel gratuito.
   modeloFallback: 'gemini-3.5-flash-lite',
 }
+
+/** Modelos del nivel gratuito conocidos, para el selector de Ajustes. */
+export const MODELOS_GRATUITOS = [
+  { id: 'gemini-3.6-flash', nombre: 'Gemini 3.6 Flash (recomendado)' },
+  { id: 'gemini-3.5-flash-lite', nombre: 'Gemini 3.5 Flash Lite (más ligero)' },
+  { id: 'gemini-3.8-flash', nombre: 'Gemini 3.8 Flash (a veces saturado)' },
+]
 
 /** Estado del riego de una planta. */
 export type EstadoRiego = 'nunca_regada' | 'al_dia' | 'proximo' | 'vencido'
