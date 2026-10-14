@@ -5,9 +5,9 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
-  // Debe coincidir con el nombre del repositorio de GitHub Pages.
-  // Si el repo se llama `plantapps`, la app vive en https://<usuario>.github.io/plantapps/
-  base: '/plantapps/',
+  // Debe coincidir (incluida la capitalización) con el nombre del repositorio:
+  // el repo es `Plantapps`, así que la URL es https://franlg.github.io/Plantapps/
+  base: '/Plantapps/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
