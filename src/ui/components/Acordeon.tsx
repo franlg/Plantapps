@@ -16,6 +16,12 @@ export interface AcordeonProps {
   tono?: 'neutro' | 'ok' | 'alerta' | 'peligro'
   /** Texto para lectores de pantalla del botón de plegar. */
   etiqueta?: string
+  /**
+   * Nivel del encabezado que envuelve al botón. Por defecto `2`, que es lo que
+   * corresponde a una sección dentro de una pantalla. Usa `3` o `4` si el
+   * acordeón cuelga de otro encabezado.
+   */
+  nivel?: 2 | 3 | 4
   className?: string
 }
 
@@ -53,11 +59,16 @@ export function Acordeon({
   onToggle,
   tono = 'neutro',
   etiqueta,
+  nivel = 2,
   className,
 }: AcordeonProps) {
   const uid = useId()
   const cabeceraId = `acordeon-cabecera-${uid}`
   const panelId = `acordeon-panel-${uid}`
+  // Encabezado que envuelve al botón: es el patrón que recomienda la WAI-ARIA
+  // para acordeones, y mantiene el título pulsable sin meter un `<h2>` dentro de
+  // un `<button>` (que no es HTML válido).
+  const Titulo = `h${nivel}` as 'h2' | 'h3' | 'h4'
 
   // Con `abierto` manda el padre; sin él, el acordeón se despliega solo.
   const controlado = abierto !== undefined
@@ -78,29 +89,31 @@ export function Acordeon({
         className,
       )}
     >
-      <button
-        id={cabeceraId}
-        type="button"
-        aria-expanded={estaAbierto}
-        aria-controls={panelId}
-        onClick={alternar}
-        className={cn(
-          'tap-target w-full min-w-0 justify-start gap-3 px-4 py-3 text-left select-none',
-          'text-[var(--text)] transition-[filter,border-color,background-color] duration-150',
-          'hover:brightness-95 dark:hover:brightness-110',
-          estaAbierto && 'border-b border-[var(--border-soft)]',
-          TONOS_CABECERA[tono],
-        )}
-      >
-        <span className="min-w-0 flex-1 text-base font-semibold">{titulo}</span>
-        {/* `contador` puede ser 0, así que se mira que exista y no que sea "verdady". */}
-        {contador !== undefined && contador !== null ? (
-          <span className="shrink-0">{contador}</span>
-        ) : null}
-        <Chevron abierto={estaAbierto} />
-        {/* La acción también se anuncia: el título solo no dice qué hace el botón. */}
-        <span className="sr-only">{etiqueta ?? (estaAbierto ? 'Plegar sección' : 'Desplegar sección')}</span>
-      </button>
+      <Titulo className="m-0 text-base font-semibold">
+        <button
+          id={cabeceraId}
+          type="button"
+          aria-expanded={estaAbierto}
+          aria-controls={panelId}
+          onClick={alternar}
+          className={cn(
+            'tap-target w-full min-w-0 justify-start gap-3 px-4 py-3 text-left select-none',
+            'text-[var(--text)] transition-[filter,border-color,background-color] duration-150',
+            'hover:brightness-95 dark:hover:brightness-110',
+            estaAbierto && 'border-b border-[var(--border-soft)]',
+            TONOS_CABECERA[tono],
+          )}
+        >
+          <span className="min-w-0 flex-1 text-base font-semibold">{titulo}</span>
+          {/* `contador` puede ser 0, así que se mira que exista y no que sea "verdady". */}
+          {contador !== undefined && contador !== null ? (
+            <span className="shrink-0">{contador}</span>
+          ) : null}
+          <Chevron abierto={estaAbierto} />
+          {/* La acción también se anuncia: el título solo no dice qué hace el botón. */}
+          <span className="sr-only">{etiqueta ?? (estaAbierto ? 'Plegar sección' : 'Desplegar sección')}</span>
+        </button>
+      </Titulo>
 
       <div
         id={panelId}

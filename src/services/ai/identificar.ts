@@ -254,7 +254,7 @@ export function construirPromptIdentificar({ tieneFoto, pistas }: PromptIdentifi
     ? `Tienes UNA foto de la planta. Fíjate en la forma de las hojas, el tallo, el color, el porte y si hay flores o frutos.`
     : `NO hay foto: solo puedes responder con lo que te cuentan. Si con eso no hay suficiente, devuelve "especie": null.`
 
-  return `Eres un botánico experto identificando plantas de interior a partir de una foto.
+  return `Eres un botánico experto que identifica plantas de interior a partir de una foto o de lo que te cuentan.
 Alguien te ha enviado ${tieneFoto ? 'una foto de una planta' : 'la descripción de una planta'} y quiere saber qué especie es. Todavía no lo sabe y depende de tu respuesta.
 
 ${encabezado}

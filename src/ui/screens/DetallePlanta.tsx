@@ -6,13 +6,18 @@
  *
  * El análisis se hace aquí mismo, sin cambiar de pantalla: en el móvil es más
  * rápido que abrir otra ruta y volver, sobre todo si la foto ya está hecha.
+ *
+ * Además de mirar la planta, la ficha la explica: una guía de cuidados que se
+ * pide una vez y se consulta, y "¿qué planta es?", para cuando el usuario no
+ * sabe qué ha comprado.
  */
 
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
-import { useAnalyses, useDb, usePhotoUrl, usePlant, useSettings, useTimeline } from '@/db/context'
+import { useAnalyses, useDb, useGuia, usePhotoUrl, usePlant, useSettings, useTimeline } from '@/db/context'
 import { aiService } from '@/services/ai'
 import { guardarFoto, pickPhoto } from '@/services/photos'
+import { frecuenciaSugerida } from '@/services/reminders'
 import { formatDateEs, nowIso, relativeEs } from '@/lib/dates'
 import {
   Badge,
@@ -22,6 +27,8 @@ import {
   EmptyState,
   ErrorBanner,
   EstadoRiegoChip,
+  SegmentedControl,
+  Sheet,
   Spinner,
   VeredictoChip,
 } from '@/ui/components'
@@ -36,15 +43,21 @@ import {
   agruparPorMes,
   avisoError,
   colorSalud,
+  contextoParaGuia,
   contextoParaIa,
   fechaLegible,
+  guiaDesactualizada,
+  pistasParaIdentificar,
+  resumenCambios,
+  tonoConfianza,
+  tonoDificultad,
   tonoSalud,
   useEstadosRiego,
   useVistaFoto,
 } from '@/ui/screens/datos'
 import type { AvisoError } from '@/ui/screens/datos'
-import { EVENTO_EMOJI, EVENTO_LABELS, GRAVEDAD_LABELS, LUZ_LABELS } from '@/types'
-import type { AiAnalysis, CareEvent } from '@/types'
+import { AiError, DIFICULTAD_LABELS, EVENTO_EMOJI, EVENTO_LABELS, GRAVEDAD_LABELS, LUZ_LABELS } from '@/types'
+import type { AiAnalysis, CareEvent, GuiaCuidados, IdentificacionDraft } from '@/types'
 
 /**
  * Aviso de error de la pantalla. El reintento viaja dentro del mismo objeto y
@@ -79,6 +92,24 @@ function BarraSalud({ salud }: { salud: number }) {
   )
 }
 
+/** Lista corta de frases sueltas (síntomas, recomendaciones, consejos). */
+function ListaViñetas({ puntos }: { puntos: string[] }) {
+  if (puntos.length === 0) return null
+
+  return (
+    <ul className="flex flex-col gap-1">
+      {puntos.map((punto) => (
+        <li key={punto} className="flex items-start gap-2 text-base text-[var(--text)]">
+          <span aria-hidden="true" className="text-[var(--text-muted)]">
+            ·
+          </span>
+          <span className="min-w-0 flex-1">{punto}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /** Lista corta de frases de la IA (síntomas o recomendaciones). */
 function ListaTexto({ titulo, puntos }: { titulo: string; puntos: string[] }) {
   if (puntos.length === 0) return null
@@ -86,16 +117,7 @@ function ListaTexto({ titulo, puntos }: { titulo: string; puntos: string[] }) {
   return (
     <div>
       <p className="mb-1 text-sm font-semibold text-[var(--text)]">{titulo}</p>
-      <ul className="flex flex-col gap-1">
-        {puntos.map((punto) => (
-          <li key={punto} className="flex items-start gap-2 text-base text-[var(--text)]">
-            <span aria-hidden="true" className="text-[var(--text-muted)]">
-              ·
-            </span>
-            <span className="min-w-0 flex-1">{punto}</span>
-          </li>
-        ))}
-      </ul>
+      <ListaViñetas puntos={puntos} />
     </div>
   )
 }
@@ -186,6 +208,164 @@ function ResumenAnalisis({ analisis }: { analisis: AiAnalysis }) {
   )
 }
 
+/**
+ * GUÍA DE CUIDADOS
+ * ================
+ * Un texto de consulta, no un aviso: se escribe una vez y se relee cuando
+ * hacen falta datos. Por eso no ensucia el historial con eventos.
+ */
+function TarjetaGuia({
+  guia,
+  generando,
+  onRegenerar,
+  onBorrar,
+}: {
+  guia: GuiaCuidados
+  generando: boolean
+  onRegenerar: () => void
+  onBorrar: () => void
+}) {
+  const desactualizada = guiaDesactualizada(guia.generadoEn)
+
+  return (
+    <Card>
+      <p className="text-lg font-bold text-[var(--text)]">{guia.nombreComun}</p>
+      <p className="text-base text-[var(--text-muted)]">
+        {guia.familia ? `${guia.nombreCientifico} · ${guia.familia}` : guia.nombreCientifico}
+      </p>
+
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Badge tone={tonoDificultad(guia.dificultad)}>
+          {`Dificultad: ${DIFICULTAD_LABELS[guia.dificultad]}`}
+        </Badge>
+        <span className="text-xs text-[var(--text-muted)]">{`Generada el ${formatDateEs(guia.generadoEn)}`}</span>
+      </div>
+
+      {desactualizada ? (
+        <p className="mt-3 rounded-xl bg-alerta-100 p-3 text-sm text-alerta-900 dark:bg-alerta-900 dark:text-alerta-100">
+          <span aria-hidden="true">🕰️</span> Es de hace más de medio año y puede estar desactualizada. Si la
+          planta ha cambiado mucho, regenérala.
+        </p>
+      ) : null}
+
+      <p className="mt-3 text-base leading-relaxed text-[var(--text)]">{guia.resumen}</p>
+
+      {guia.frecuenciaRiegoDias ? (
+        <p className="mt-2 text-sm text-[var(--text-muted)]">
+          {`Riego: cada ${guia.frecuenciaRiegoDias} días.`}
+        </p>
+      ) : null}
+
+      <div className="mt-4 flex flex-col gap-4">
+        {guia.secciones.map((seccion) => (
+          <section key={seccion.titulo}>
+            <h3 className="mb-1 text-sm font-semibold tracking-wide text-[var(--text-muted)] uppercase">
+              {seccion.titulo}
+            </h3>
+            <p className="text-base leading-relaxed text-[var(--text)]">{seccion.contenido}</p>
+            {seccion.puntos ? (
+              <div className="mt-1">
+                <ListaViñetas puntos={seccion.puntos} />
+              </div>
+            ) : null}
+          </section>
+        ))}
+      </div>
+
+      <div className="mt-4 flex flex-col gap-2">
+        <Button variant="secondary" fullWidth loading={generando} onClick={onRegenerar}>
+          Regenerar
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onBorrar}>
+          Borrar la guía
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
+/**
+ * LO QUE LA IA HA RECONOCIDO
+ * ==========================
+ * `especie: null` es una respuesta buena, no un fallo: se dice con claridad y se
+ * ofrece otra foto. Nunca se rellena medio dato a medias.
+ */
+function PanelIdentificacion({
+  identificacion,
+  tablaDias,
+  onRepetir,
+  onPedirTabla,
+}: {
+  identificacion: IdentificacionDraft
+  tablaDias: number | null
+  onRepetir: () => void
+  onPedirTabla: () => void
+}) {
+  const desconocida = identificacion.especie === null
+  // La tabla y el modelo pueden no cuadrar. Se avisa y se deja elegir.
+  const discrepancia =
+    !desconocida && tablaDias != null && identificacion.frecuenciaRiegoDias != null &&
+    tablaDias !== identificacion.frecuenciaRiegoDias
+
+  return (
+    <div className="mt-4">
+      {desconocida ? (
+        <p className="text-lg font-semibold text-[var(--text)]">No he podido reconocerla</p>
+      ) : (
+        <>
+          <p className="text-xl font-bold text-[var(--text)]">{identificacion.especie}</p>
+          {identificacion.nombreComun ? (
+            <p className="text-base text-[var(--text)]">{identificacion.nombreComun}</p>
+          ) : null}
+        </>
+      )}
+
+      {identificacion.familia ? (
+        <p className="mt-0.5 text-sm text-[var(--text-muted)]">{`Familia: ${identificacion.familia}`}</p>
+      ) : null}
+
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Badge tone={tonoConfianza(identificacion.confianza)}>
+          {`Confianza: ${identificacion.confianza}`}
+        </Badge>
+      </div>
+
+      <p className="mt-2 text-base leading-relaxed text-[var(--text)]">{identificacion.razon}</p>
+
+      {identificacion.confianza === 'baja' ? (
+        <p className="mt-3 rounded-xl bg-alerta-100 p-3 text-sm text-alerta-900 dark:bg-alerta-900 dark:text-alerta-100">
+          <span aria-hidden="true">⚠️</span> Fídate poco: la foto puede no estar clara o ser parcial.
+          Hazle otra foto de cerca y con buena luz.
+        </p>
+      ) : null}
+
+      {identificacion.alternativas.length > 0 ? (
+        <div className="mt-3">
+          <p className="mb-1 text-sm font-semibold text-[var(--text)]">También podría ser</p>
+          <ListaViñetas puntos={identificacion.alternativas} />
+        </div>
+      ) : null}
+
+      {discrepancia ? (
+        <div className="mt-3 rounded-xl bg-[var(--border-soft)] p-3">
+          <p className="text-sm text-[var(--text)]">
+            {`La tabla de la app sugiere regarla cada ${tablaDias} días.`}
+          </p>
+          <Button variant="ghost" size="sm" className="mt-2" onClick={onPedirTabla}>
+            {`Usar los ${tablaDias} días de la tabla`}
+          </Button>
+        </div>
+      ) : null}
+
+      <div className="mt-3 flex flex-col gap-2">
+        <Button variant="secondary" fullWidth onClick={onRepetir}>
+          Repetir con otra foto
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export function DetallePlanta() {
   const { id } = useParams<{ id: string }>()
   const navegar = useNavigate()
@@ -212,6 +392,7 @@ export function DetallePlanta() {
   const plantaId = planta?.id
   const eventos = useTimeline(plantaId)
   const analisisGuardados = useAnalyses(plantaId)
+  const guia = useGuia(plantaId)
   const analisisPorId = useMemo(
     () => new Map(analisisGuardados.map((analisis) => [analisis.id, analisis])),
     [analisisGuardados],
@@ -230,6 +411,23 @@ export function DetallePlanta() {
   const [registrando, setRegistrando] = useState(false)
   const [confirmado, setConfirmado] = useState(false)
 
+  // Estado de la guía de cuidados.
+  const [pidiendoGuia, setPidiendoGuia] = useState(false)
+  const [regenerarAbierto, setRegenerarAbierto] = useState(false)
+  const [borrarGuiaAbierto, setBorrarGuiaAbierto] = useState(false)
+
+  // Estado de "¿qué planta es?".
+  const [identificarAbierto, setIdentificarAbierto] = useState(false)
+  const [fuenteFoto, setFuenteFoto] = useState<'camara' | 'galeria'>('camara')
+  const [fotoIdentificar, setFotoIdentificar] = useState<File | null>(null)
+  const [identificando, setIdentificando] = useState(false)
+  const [identificacion, setIdentificacion] = useState<IdentificacionDraft | null>(null)
+  const [errorIdentificar, setErrorIdentificar] = useState<AvisoError | null>(null)
+  const [rellenoAbierto, setRellenoAbierto] = useState(false)
+  const [rellenando, setRellenando] = useState(false)
+  /** `null` = se queda con la cifra del modelo; con número = la de la tabla de la app. */
+  const [riegoElegido, setRiegoElegido] = useState<number | null>(null)
+
   // Estado de las acciones sobre la planta.
   const [eventoABorrar, setEventoABorrar] = useState<CareEvent | null>(null)
   const [archivarAbierto, setArchivarAbierto] = useState(false)
@@ -237,8 +435,15 @@ export function DetallePlanta() {
   const [cambiandoFoto, setCambiandoFoto] = useState(false)
 
   const vistaFoto = useVistaFoto(foto)
+  const vistaFotoIdentificar = useVistaFoto(fotoIdentificar)
   const hayClave = (settings.apiKey ?? '').trim() !== ''
   const grupos = useMemo(() => agruparPorMes(eventos), [eventos])
+
+  /** La tabla de la app y lo que dice el modelo, para poder compararlos. */
+  const tablaIdentificacion = useMemo(
+    () => (identificacion?.especie ? frecuenciaSugerida(identificacion.especie) : null),
+    [identificacion],
+  )
 
   /** Avisa de un fallo y deja apuntado cómo volver a intentarlo. */
   const mostrarError = (problema: unknown, porDefecto: string, reintentar?: () => void) => {
@@ -349,6 +554,134 @@ export function DetallePlanta() {
     }
   }
 
+  /**
+   * Pide la guía de cuidados. Con foto de portada el modelo la afina a esa
+   * planta concreta; sin ella se la pide solo con los datos que ya tenemos.
+   * No crea ningún evento: la guía es un texto de consulta, no un análisis.
+   */
+  const pedirGuia = async () => {
+    if (!planta) return
+    if (!hayClave) {
+      mostrarError(new AiError('Falta la clave de la API', 'sin_clave'), 'Falta la clave de la IA')
+      return
+    }
+
+    setPidiendoGuia(true)
+    cerrarError()
+    setRegenerarAbierto(false)
+
+    try {
+      const ultimoRiego = eventos.find((evento) => evento.tipo === 'riego')?.fecha ?? null
+      const portada = planta.fotoPortadaId ? await db.photos.get(planta.fotoPortadaId) : undefined
+
+      const borrador = await aiService.generarGuia({
+        plantId: planta.id,
+        ...(portada ? { foto: portada.blob } : {}),
+        contexto: contextoParaGuia(planta, ultimoRiego),
+        modelo: settings.modelo,
+      })
+
+      await db.guides.create({ ...borrador, plantId: planta.id, modelo: settings.modelo })
+    } catch (problema) {
+      mostrarError(
+        problema,
+        'No se ha podido escribir la guía de cuidados',
+        () => void pedirGuia(),
+      )
+    } finally {
+      setPidiendoGuia(false)
+    }
+  }
+
+  const borrarGuia = async () => {
+    if (!plantaId) return
+    setBorrarGuiaAbierto(false)
+    try {
+      await db.guides.remove(plantaId)
+    } catch {
+      // Si no se borra, la guía sigue ahí: no merecía un aviso en pantalla.
+    }
+  }
+
+  /** Abre "¿qué planta es?" de cero: sin foto y sin resultado anterior. */
+  const abrirIdentificar = () => {
+    setIdentificarAbierto(true)
+    setFuenteFoto('camara')
+    setFotoIdentificar(null)
+    setIdentificacion(null)
+    setErrorIdentificar(null)
+    setRiegoElegido(null)
+  }
+
+  const cerrarIdentificar = () => {
+    setIdentificarAbierto(false)
+    setFotoIdentificar(null)
+    setIdentificacion(null)
+    setErrorIdentificar(null)
+    setRiegoElegido(null)
+  }
+
+  const elegirFotoIdentificar = async (fuente: 'camara' | 'galeria') => {
+    setFuenteFoto(fuente)
+    setErrorIdentificar(null)
+    try {
+      const archivo = await pickPhoto(fuente)
+      if (!archivo) return
+      setFotoIdentificar(archivo)
+      setIdentificacion(null)
+      setRiegoElegido(null)
+    } catch (problema) {
+      setErrorIdentificar(avisoError(problema, 'No se ha podido elegir la foto'))
+    }
+  }
+
+  const identificar = async () => {
+    if (!planta || !fotoIdentificar) return
+
+    setIdentificando(true)
+    setErrorIdentificar(null)
+
+    try {
+      const borrador = await aiService.identificar({
+        plantId: planta.id,
+        foto: fotoIdentificar,
+        pistas: pistasParaIdentificar(planta),
+        modelo: settings.modelo,
+      })
+      setIdentificacion(borrador)
+    } catch (problema) {
+      setErrorIdentificar(avisoError(problema, 'No se ha podido identificar la planta'))
+    } finally {
+      setIdentificando(false)
+    }
+  }
+
+  /**
+   * Escribe en la ficha lo que ha dicho la IA, de golpe: especie, riego y luz.
+   * Nunca un campo suelto, y nunca el historial.
+   */
+  const rellenarFicha = async () => {
+    if (!planta || !plantaId || !identificacion?.especie) return
+
+    const frecuencia = riegoElegido ?? identificacion.frecuenciaRiegoDias
+    setRellenando(true)
+
+    try {
+      await db.plants.update(plantaId, {
+        especie: identificacion.especie,
+        frecuenciaRiegoDias: frecuencia ?? planta.frecuenciaRiegoDias,
+        luz: identificacion.luz ?? planta.luz,
+      })
+      setRellenoAbierto(false)
+      cerrarIdentificar()
+    } catch (problema) {
+      setRellenoAbierto(false)
+      setErrorIdentificar(avisoError(problema, 'No se ha podido rellenar los datos de la planta'))
+    } finally {
+      setRellenando(false)
+    }
+  }
+
   const borrarEvento = async () => {
     if (!eventoABorrar) return
     const evento = eventoABorrar
@@ -404,6 +737,15 @@ export function DetallePlanta() {
       </Pantalla>
     )
   }
+
+  // Lo que va a cambiar la ficha, en una frase por campo.
+  const lineasRelleno = identificacion ? resumenCambios(identificacion, riegoElegido).join(' · ') : ''
+  // Si el modelo y la tabla no cuadran, se avisa en una línea y se deja elegir.
+  const notaTabla =
+    tablaIdentificacion != null && identificacion?.frecuenciaRiegoDias != null &&
+    tablaIdentificacion !== identificacion.frecuenciaRiegoDias && riegoElegido == null
+      ? ` La tabla de la app sugiere regarla cada ${tablaIdentificacion} días.`
+      : ''
 
   return (
     <Pantalla>
@@ -503,6 +845,14 @@ export function DetallePlanta() {
             Editar
           </Button>
         </div>
+        <Button variant="secondary" fullWidth onClick={abrirIdentificar}>
+          <span aria-hidden="true">🔍</span> ¿Qué planta es?
+        </Button>
+        {!planta.especie ? (
+          <p className="text-sm text-[var(--text-muted)]">
+            Si no sabes qué especie es, hazle una foto y te la digo.
+          </p>
+        ) : null}
       </div>
 
       {confirmado && !error ? (
@@ -528,6 +878,38 @@ export function DetallePlanta() {
               Ir a Ajustes
             </BotonEnlace>
           ) : null}
+        </div>
+      ) : null}
+
+      {/* ------------------------------------------------------------ */}
+      {/* Guía de cuidados                                             */}
+      {/* ------------------------------------------------------------ */}
+      <TituloSeccion>Guía de cuidados</TituloSeccion>
+
+      {guia ? (
+        <TarjetaGuia
+          guia={guia}
+          generando={pidiendoGuia}
+          onRegenerar={() => setRegenerarAbierto(true)}
+          onBorrar={() => setBorrarGuiaAbierto(true)}
+        />
+      ) : (
+        <Card>
+          <p className="text-base text-[var(--text)]">
+            Una guía con cómo regarla, la luz que quiere y los problemas típicos. Se escribe una vez y se
+            consulta cuando haga falta.
+          </p>
+          <Button size="lg" fullWidth className="mt-3" loading={pidiendoGuia} onClick={() => void pedirGuia()}>
+            <span aria-hidden="true">📖</span> Pedir guía de cuidados
+          </Button>
+        </Card>
+      )}
+
+      {/* La guía tarda lo suyo: se dice, para que el botón no parezca colgado. */}
+      {pidiendoGuia ? (
+        <div className="mt-3 flex items-center gap-2 text-[var(--text-muted)]">
+          <Spinner label="Escribiendo la guía de cuidados" />
+          <span className="text-sm">La IA está escribiendo la guía. Tarda unos segundos.</span>
         </div>
       ) : null}
 
@@ -713,6 +1095,142 @@ export function DetallePlanta() {
         onConfirm={() => void archivar()}
         onCancel={() => setArchivarAbierto(false)}
       />
+
+      <ConfirmDialog
+        open={regenerarAbierto}
+        title="¿Escribir la guía otra vez?"
+        message={`Se pierde la guía del ${guia ? fechaLegible(guia.generadoEn) : 'otra vez'} y se escribe una nueva con los datos que tiene la planta ahora. No se toca el historial.`}
+        confirmLabel="Sí, escribirla"
+        cancelLabel="Cancelar"
+        onConfirm={() => void pedirGuia()}
+        onCancel={() => setRegenerarAbierto(false)}
+      />
+
+      <ConfirmDialog
+        open={borrarGuiaAbierto}
+        title="¿Borrar la guía?"
+        message={`Se borra la guía de ${planta.nombre}. Los riegos y los análisis se quedan como están, y puedes volver a pedirla cuando quieras.`}
+        confirmLabel="Sí, borrar"
+        cancelLabel="Cancelar"
+        onConfirm={() => void borrarGuia()}
+        onCancel={() => setBorrarGuiaAbierto(false)}
+        destructive
+      />
+
+      <ConfirmDialog
+        open={rellenoAbierto}
+        title="¿Rellenar los datos?"
+        message={`En la ficha de «${planta.nombre}» se va a guardar: ${lineasRelleno}. El historial no cambia.${notaTabla}`}
+        confirmLabel="Sí, rellenar"
+        cancelLabel="Cancelar"
+        onConfirm={() => void rellenarFicha()}
+        onCancel={() => setRellenoAbierto(false)}
+      />
+
+      {/* ------------------------------------------------------------ */}
+      {/* ¿Qué planta es?                                             */}
+      {/* ------------------------------------------------------------ */}
+      <Sheet
+        open={identificarAbierto}
+        onClose={cerrarIdentificar}
+        title="¿Qué planta es?"
+        footer={
+          identificacion?.especie ? (
+            <Button fullWidth size="lg" loading={rellenando} onClick={() => setRellenoAbierto(true)}>
+              Rellenar los datos
+            </Button>
+          ) : undefined
+        }
+      >
+        {!hayClave ? (
+          <div>
+            <p className="text-base text-[var(--text)]">
+              Identificar plantas también usa la IA. Añade tu clave gratuita en Ajustes.
+            </p>
+            <BotonEnlace to="/ajustes" className="mt-3 w-full">
+              Ir a Ajustes
+            </BotonEnlace>
+          </div>
+        ) : (
+          <>
+            {errorIdentificar ? (
+              <div className="mb-3">
+                <ErrorBanner
+                  title={errorIdentificar.titulo}
+                  message={errorIdentificar.mensaje}
+                  onRetry={fotoIdentificar ? () => void identificar() : undefined}
+                  onDismiss={() => setErrorIdentificar(null)}
+                />
+                {errorIdentificar.irA ? (
+                  <BotonEnlace to={errorIdentificar.irA} className="mt-2 w-full">
+                    Ir a Ajustes
+                  </BotonEnlace>
+                ) : null}
+              </div>
+            ) : null}
+
+            {vistaFotoIdentificar ? (
+              <img
+                src={vistaFotoIdentificar}
+                alt="Foto para identificar la planta"
+                className="aspect-4/3 w-full rounded-2xl object-cover"
+              />
+            ) : null}
+
+            {!identificacion ? (
+              <>
+                {vistaFotoIdentificar ? null : (
+                  <p className="text-base text-[var(--text)]">
+                    Hazle una foto a la planta: mejor de cerca, con luz natural y sin sombras.
+                  </p>
+                )}
+
+                <SegmentedControl
+                  value={fuenteFoto}
+                  options={[
+                    { value: 'camara', label: 'Cámara' },
+                    { value: 'galeria', label: 'Galería' },
+                  ]}
+                  onChange={(fuente) => void elegirFotoIdentificar(fuente)}
+                  ariaLabel="De dónde sacar la foto"
+                  className="mt-3"
+                />
+
+                {vistaFotoIdentificar ? (
+                  <Button
+                    fullWidth
+                    size="lg"
+                    className="mt-3"
+                    loading={identificando}
+                    onClick={() => void identificar()}
+                  >
+                    Identificar
+                  </Button>
+                ) : null}
+              </>
+            ) : null}
+
+            {identificando ? (
+              <div className="mt-3 flex items-center gap-2 text-[var(--text-muted)]">
+                <Spinner label="Identificando la planta" />
+                <span className="text-sm">La IA está mirando la planta. Tarda unos segundos.</span>
+              </div>
+            ) : null}
+
+            {identificacion ? (
+              <PanelIdentificacion
+                identificacion={identificacion}
+                tablaDias={tablaIdentificacion}
+                onRepetir={() => void elegirFotoIdentificar('camara')}
+                onPedirTabla={() => {
+                  setRiegoElegido(tablaIdentificacion)
+                  setRellenoAbierto(true)
+                }}
+              />
+            ) : null}
+          </>
+        )}
+      </Sheet>
 
       {archivando ? (
         <div className="fixed inset-x-0 bottom-24 z-50 flex justify-center">

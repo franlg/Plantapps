@@ -10,12 +10,16 @@ import { useCallback, useEffect, useState } from 'react'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import { useDb } from '@/db/context'
-import { formatDateEs, relativeEs, todayIso, toDate } from '@/lib/dates'
+import { daysSince, formatDateEs, relativeEs, todayIso, toDate } from '@/lib/dates'
 import { AiError, EVENTO_LABELS, LUZ_LABELS } from '@/types'
 import type {
   AiErrorCode,
   CareEvent,
+  Confianza,
+  Dificultad,
+  GuiaInput,
   ID,
+  IdentificacionDraft,
   Luz,
   Plant,
   PlantContext,
@@ -282,6 +286,86 @@ export function contextoParaIa(
     frecuenciaRiegoDias: planta.frecuenciaRiegoDias ?? estado?.frecuenciaDias ?? null,
     historial: eventos.slice(0, 10).map(lineaHistorial),
   }
+}
+
+/**
+ * Datos de la planta para escribirle la guía de cuidados.
+ *
+ * No lleva el historial: para un texto de consulta importa cómo está la planta
+ * ahora (maceta, ubicación, luz, cuánto lleva plantada y cuándo se regó por
+ * última vez), no lo que le ha pasado antes.
+ */
+export function contextoParaGuia(planta: Plant, ultimoRiego: string | null): GuiaInput['contexto'] {
+  return {
+    nombre: planta.nombre,
+    especie: planta.especie,
+    maceta: planta.maceta,
+    ubicacion: planta.ubicacion,
+    luz: planta.luz ? LUZ_LABELS[planta.luz] : undefined,
+    diasDesdePlantado: planta.fechaPlantado ? daysSince(planta.fechaPlantado) : null,
+    ultimoRiego,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Guía de cuidados e identificación
+// ---------------------------------------------------------------------------
+
+/** A partir de aquí una guía puede hablar de una planta que ya no es la misma. */
+export const DIAS_GUIA_VIGENTE = 180
+
+/** `true` si la guía tiene más de medio año y conviene ofrecer regenerarla. */
+export function guiaDesactualizada(generadoEn: string, now: Date = new Date()): boolean {
+  const dias = daysSince(generadoEn, now)
+  return dias !== null && dias > DIAS_GUIA_VIGENTE
+}
+
+/** Verde si la planta se sostiene sola, gris si hay que vigilarla, ámbar si es para experts. */
+export function tonoDificultad(dificultad: Dificultad): 'ok' | 'neutro' | 'alerta' {
+  if (dificultad === 'facil') return 'ok'
+  if (dificultad === 'media') return 'neutro'
+  return 'alerta'
+}
+
+/** El semáforo de "cuánto se fía el modelo": verde, ámbar, rojo. */
+export function tonoConfianza(confianza: Confianza): 'ok' | 'alerta' | 'peligro' {
+  if (confianza === 'alta') return 'ok'
+  if (confianza === 'media') return 'alerta'
+  return 'peligro'
+}
+
+/**
+ * Lo que ya sabemos de la planta, en una línea por dato. Va como pista al
+ * identificar: no es obligatorio (si no se sabe nada, no se dice nada), pero
+ * afina mucho la respuesta.
+ */
+export function pistasParaIdentificar(planta: Plant): string {
+  const partes: Array<string | null> = [
+    planta.ubicacion ? `Está en: ${planta.ubicacion} (planta de casa).` : 'No se sabe si es de casa o de exterior.',
+    planta.luz ? `Le da: ${LUZ_LABELS[planta.luz].toLowerCase()}.` : null,
+    planta.maceta ? `Maceta: ${planta.maceta}.` : null,
+  ]
+
+  return partes.filter((parte): parte is string => parte !== null).join(' ')
+}
+
+/**
+ * Las líneas del diálogo "¿relleno los datos?": qué campo cambia y a qué valor.
+ * `frecuencia` permite que el usuario se quede con la cifra de la tabla de la
+ * app en lugar de la del modelo: las dos se muestran y él elige.
+ */
+export function resumenCambios(
+  identificacion: IdentificacionDraft,
+  frecuencia: number | null = null,
+): string[] {
+  const dias = frecuencia ?? identificacion.frecuenciaRiegoDias
+  const lineas: string[] = []
+
+  if (identificacion.especie) lineas.push(`especie: ${identificacion.especie}`)
+  if (dias != null) lineas.push(`riego cada ${dias} días`)
+  if (identificacion.luz) lineas.push(`luz: ${LUZ_LABELS[identificacion.luz].toLowerCase()}`)
+
+  return lineas
 }
 
 // ---------------------------------------------------------------------------

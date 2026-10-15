@@ -2,20 +2,31 @@
  * AJUSTES
  * =======
  * Cinco bloques: la clave de la IA, los modelos, las copias de seguridad, la
- * instalación de la app y el aspecto. Abajo queda el sitio donde el usuario
- * recupera o borra las plantas que archivó, y el aviso de que todo vive en el
- * dispositivo y de que hay que exportar copias.
+ * instalación de la app y el aspecto. A eso se suma el bloque de recordatorios
+ * de riego (el aviso del sistema, que se programa aparte del "Requieren
+ * atención"). Abajo queda el sitio donde el usuario recupera o borra las plantas
+ * que archivó, y el aviso de que todo vive en el dispositivo y de que hay que
+ * exportar copias.
  *
  * Nada de lo que hay aquí sale del móvil: ni la clave ni las fotos.
  */
 
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDb, usePlants, useSettings } from '@/db/context'
 import { createBackupService } from '@/db'
 import { precargarAjustes } from '@/services/ai'
+import {
+  AVISO_BLOQUEADO,
+  AVISO_LIMITACION,
+  AVISO_NO_SOPORTADO,
+  calcularAvisos,
+  recordatorioScheduler,
+} from '@/services/recordatorios'
 import { useInstalable } from '@/services/pwa'
+import { cn } from '@/lib/cn'
 import { formatDateEs, nowIso, todayIso } from '@/lib/dates'
 import {
+  Badge,
   Button,
   Card,
   ConfirmDialog,
@@ -29,7 +40,13 @@ import {
 import { Cabecera, Pantalla, TituloSeccion } from '@/ui/screens/Comunes'
 import { OPCION_VACIA, avisoError, useTema } from '@/ui/screens/datos'
 import type { AvisoError } from '@/ui/screens/datos'
-import { MODELOS_GRATUITOS } from '@/types'
+import { MODELOS_GRATUITOS, PERMISO_LABELS } from '@/types'
+import type {
+  ConfigRecordatorios,
+  EstadoPlanificador,
+  PermisoNotificaciones,
+} from '@/types'
+import type { BadgeTone } from '@/ui/components'
 import type { ImportReport } from '@/services/contracts'
 
 /** Versión que se muestra en «Acerca de». */
@@ -38,6 +55,84 @@ const VERSION = '1.0.0'
 const ENLACE_CLAVE = 'https://aistudio.google.com/apikey'
 
 const OPCIONES_MODELO = MODELOS_GRATUITOS.map((modelo) => ({ value: modelo.id, label: modelo.nombre }))
+
+// ---------------------------------------------------------------------------
+// Recordatorios de riego
+// ---------------------------------------------------------------------------
+
+/**
+ * Tono de la pastilla de permiso: verde si puede, rojo si lo ha bloqueado,
+ * ámbar si todavía no ha decidido y gris si el navegador no puede avisar.
+ */
+const TONO_PERMISO: Record<PermisoNotificaciones, BadgeTone> = {
+  granted: 'ok',
+  denied: 'peligro',
+  default: 'alerta',
+  'no-soportado': 'neutro',
+}
+
+const OPCIONES_ANTICIPACION = [
+  { value: '0', label: 'El mismo día' },
+  { value: '1', label: '1 día antes' },
+  { value: '2', label: '2 días antes' },
+]
+
+/**
+ * Cómo volver a encender unas notificaciones ya bloqueadas. En un enlace como
+ * `chrome://settings/notifications` no se puede entrar desde Android, así que la
+ * pista tiene que ser texto: la ruta de los ajustes del móvil.
+ */
+const COMO_REACTIVAR =
+  'Abre los ajustes de tu móvil → Apps → Chrome → Notificaciones y vuelve a activar los avisos de Plantapps.'
+
+/** `HH:mm` es lo único que acepta el input de hora; nada más se guarda. */
+const HORA_VALIDA = /^([01]\d|2[0-3]):[0-5]\d$/
+
+interface InterruptorProps {
+  activo: boolean
+  /** Nombre accesible: es el texto que hay al lado, en pantalla. */
+  etiqueta: string
+  deshabilitado?: boolean
+  onChange: (siguiente: boolean) => void
+}
+
+/**
+ * Interruptor maestro de los recordatorios.
+ *
+ * Es un `<button role="switch">` con `aria-checked`: los lectores de pantalla
+ * anuncian "activado" o "desactivado" en vez de "pulsado". El botón ocupa 44 px
+ * de alto aunque el carril se vea más fino, que es lo que pide el dedo.
+ */
+function Interruptor({ activo, etiqueta, deshabilitado = false, onChange }: InterruptorProps) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={activo}
+      aria-label={etiqueta}
+      disabled={deshabilitado}
+      onClick={() => onChange(!activo)}
+      className={cn('tap-target w-16 shrink-0', deshabilitado && 'cursor-not-allowed opacity-55')}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          'relative block h-8 w-14 rounded-full border transition-colors',
+          activo
+            ? 'border-brand-600 bg-brand-600'
+            : 'border-[var(--border-soft)] bg-[var(--border-soft)]',
+        )}
+      >
+        <span
+          className={cn(
+            'absolute top-0.5 left-0.5 size-7 rounded-full bg-white shadow-sm transition-transform',
+            activo && 'translate-x-6',
+          )}
+        />
+      </span>
+    </button>
+  )
+}
 
 /** Lo que hay en `<input type="file">` en ese momento, ya leído y con un vistazo al formato. */
 interface CopiaElegida {
@@ -99,6 +194,129 @@ export function Ajustes() {
 
   // --- Plantas archivadas ----------------------------------------------
   const [borrando, setBorrando] = useState<string | null>(null)
+
+  // --- Recordatorios de riego -------------------------------------------
+  const { activos, hora, diasAnticipacion } = settings.recordatorios
+  /** Los tres campos sueltos, agrupados: así el efecto de sincronizar no se relanza solo. */
+  const config = useMemo<ConfigRecordatorios>(
+    () => ({ activos, hora, diasAnticipacion }),
+    [activos, hora, diasAnticipacion],
+  )
+
+  const [estado, setEstado] = useState<EstadoPlanificador | null>(null)
+  const [programados, setProgramados] = useState<number | null>(null)
+  const [pidiendoPermiso, setPidiendoPermiso] = useState(false)
+  const [probando, setProbando] = useState(false)
+  const [errorAvisos, setErrorAvisos] = useState<AvisoError | null>(null)
+  /** Cuántas veces ha vuelto la app al primer plano: obliga a rearar los avisos. */
+  const [vueltas, setVueltas] = useState(0)
+
+  /**
+   * Lo que dice el navegador. Hasta que responda se asume lo prudente
+   * (`'default'`: ni sí ni no), aunque esa parte de la pantalla no se pinta
+   * hasta tener la respuesta de verdad.
+   */
+  const permiso: PermisoNotificaciones = estado?.permiso ?? 'default'
+  const soportado = estado?.permiso !== 'no-soportado'
+  const puedeAvisar = permiso === 'granted'
+
+  const leerEstado = useCallback(async () => {
+    const siguiente = await recordatorioScheduler.estado()
+    setEstado(siguiente)
+    setProgramados(siguiente.programados)
+  }, [])
+
+  useEffect(() => {
+    let vivo = true
+    void recordatorioScheduler.estado().then((siguiente) => {
+      if (!vivo) return
+      setEstado(siguiente)
+      setProgramados(siguiente.programados)
+    })
+    return () => {
+      vivo = false
+    }
+  }, [])
+
+  /*
+   * Al volver a primer plano se relee el estado y se rearma lo que haga falta.
+   * Android puede haber cerrado el service worker mientras no mirábamos, y los
+   * avisos que tenía armada se habrían quedado viejos o directamente perdidos.
+   *
+   * El contador está en el estado a propósito: si el permiso sigue siendo el
+   * mismo, releerlo no cambia nada y los avisos se quedarían sin rearmar. Subir
+   * el contador fuerza la resincronización aunque todo lo demás siga igual.
+   */
+  useEffect(() => {
+    const alVolver = () => {
+      if (document.visibilityState !== 'visible') return
+      setVueltas((vueltas) => vueltas + 1)
+      void leerEstado()
+    }
+    document.addEventListener('visibilitychange', alVolver)
+    return () => document.removeEventListener('visibilitychange', alVolver)
+  }, [leerEstado])
+
+  /*
+   * Cada vez que cambian los ajustes (o el permiso) se manda la lista COMPLETA
+   * de avisos: lo que no esté en ella se cancela. Por eso se vuelve a calcular
+   * entera en vez de añadir solo lo nuevo.
+   */
+  useEffect(() => {
+    if (!activos || !puedeAvisar) return
+    let vivo = true
+
+    void calcularAvisos(db, config)
+      .then((avisos) => recordatorioScheduler.sincronizar(avisos))
+      .then((total) => {
+        if (vivo) setProgramados(total)
+      })
+      .catch((problema: unknown) => {
+        if (vivo) setErrorAvisos(avisoError(problema, 'No se han podido programar los avisos'))
+      })
+
+    return () => {
+      vivo = false
+    }
+  }, [db, config, activos, puedeAvisar, vueltas])
+
+  /**
+   * Guarda **un trozo** de la configuración. Se manda el objeto entero porque
+   * `recordatorios` vive dentro de `AppSettings`: si se guardara solo el campo
+   * cambiado, `settings.save` lo sustituiría entero y se perderían los otros dos.
+   */
+  const guardarRecordatorios = async (cambio: Partial<ConfigRecordatorios>) => {
+    setErrorAvisos(null)
+    try {
+      await guardar({ recordatorios: { ...config, ...cambio } })
+    } catch (problema) {
+      setErrorAvisos(avisoError(problema, 'No se ha podido guardar el ajuste'))
+    }
+  }
+
+  const pedirPermiso = async () => {
+    setPidiendoPermiso(true)
+    setErrorAvisos(null)
+    try {
+      await recordatorioScheduler.pedirPermiso()
+      await leerEstado()
+    } finally {
+      setPidiendoPermiso(false)
+    }
+  }
+
+  const probar = async () => {
+    setProbando(true)
+    setErrorAvisos(null)
+    try {
+      await recordatorioScheduler.probar()
+      setAviso('Aviso de prueba enviado: debería aparecer ya como notificación.')
+    } catch (problema) {
+      setErrorAvisos(avisoError(problema, 'No se ha podido probar la notificación'))
+    } finally {
+      setProbando(false)
+    }
+  }
 
   const guardarClave = async () => {
     const valor = clave.trim()
@@ -412,6 +630,143 @@ export function Ajustes() {
           onChange={(valor) => cambiarTema(valor)}
           ariaLabel="Tema de la aplicación"
         />
+      </Card>
+
+      {/* ------------------------------------------------------------- */}
+      {/* Recordatorios de riego                                          */}
+      {/* ------------------------------------------------------------- */}
+      <TituloSeccion>Recordatorios de riego</TituloSeccion>
+      <Card className="flex flex-col gap-4">
+        {estado === null ? (
+          <div className="flex items-center gap-3 text-sm text-[var(--text-muted)]">
+            <Spinner size="sm" label="Comprobando si este navegador puede avisar" />
+            <span>Comprobando si este navegador puede avisar…</span>
+          </div>
+        ) : (
+          <>
+            {/* Interruptor maestro + permiso, siempre a la vista. */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-base font-semibold text-[var(--text)]">
+                  Avisarme cuando toque regar
+                </p>
+                <p className="mt-0.5 text-sm text-[var(--text-muted)]">
+                  {soportado
+                    ? 'Un aviso del sistema con el nombre de la planta y lo que toca hacer.'
+                    : 'No se puede: este navegador no sabe mostrar avisos.'}
+                </p>
+              </div>
+              <Interruptor
+                activo={activos}
+                etiqueta="Avisarme cuando toque regar"
+                deshabilitado={!soportado}
+                onChange={(siguiente) => void guardarRecordatorios({ activos: siguiente })}
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-[var(--text-muted)]">Notificaciones</span>
+              <Badge tone={TONO_PERMISO[permiso]}>{PERMISO_LABELS[permiso]}</Badge>
+            </div>
+
+            {permiso === 'default' ? (
+              <Button
+                variant="secondary"
+                fullWidth
+                loading={pidiendoPermiso}
+                onClick={() => void pedirPermiso()}
+              >
+                Permitir notificaciones
+              </Button>
+            ) : null}
+
+            {permiso === 'denied' ? (
+              <p className="text-sm leading-relaxed text-peligro-700 dark:text-peligro-200">
+                {AVISO_BLOQUEADO} {COMO_REACTIVAR}
+              </p>
+            ) : null}
+
+            {permiso === 'no-soportado' ? (
+              <p className="text-sm leading-relaxed text-[var(--text-muted)]">{AVISO_NO_SOPORTADO}</p>
+            ) : null}
+
+            {/* Hora y antelación: qué se guarda y cuánto antes suena. */}
+            <div className="flex flex-col gap-4">
+              <Field
+                label="Hora del aviso"
+                hint="La hora local de este móvil. Dentro de la app los avisos salen a cualquier hora."
+                htmlFor="campo-hora-recordatorio"
+              >
+                <input
+                  id="campo-hora-recordatorio"
+                  type="time"
+                  value={hora}
+                  disabled={!soportado}
+                  step={300}
+                  onChange={(e) => {
+                    const valor = e.target.value
+                    // El input deja el campo vacío mientras se teclea: eso no
+                    // es una hora y no se guarda para no romper el cálculo.
+                    if (HORA_VALIDA.test(valor)) void guardarRecordatorios({ hora: valor })
+                  }}
+                  className="campo max-w-[12rem] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 dark:[&::-webkit-calendar-picker-indicator]:invert"
+                />
+              </Field>
+
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-semibold text-[var(--text)]">
+                  Con cuánta antelación
+                </span>
+                <SegmentedControl
+                  value={String(diasAnticipacion)}
+                  options={OPCIONES_ANTICIPACION}
+                  ariaLabel="Antelación del aviso de riego"
+                  onChange={(valor) => void guardarRecordatorios({ diasAnticipacion: Number(valor) })}
+                />
+              </div>
+            </div>
+
+            {/* Programación: cuántos avisos hay ahora mismo armados. */}
+            {activos && puedeAvisar ? (
+              <p className="text-sm text-[var(--text-muted)]" role="status">
+                {programados === null
+                  ? 'Contando los avisos…'
+                  : programados === 0
+                    ? 'Ahora mismo no hay ningún aviso programado.'
+                    : `${programados} ${programados === 1 ? 'planta tiene' : 'plantas tienen'} un aviso programado.`}
+              </p>
+            ) : activos ? (
+              <p className="text-sm text-[var(--text-muted)]">
+                Sin permiso no se programa nada: hay que activar las notificaciones primero.
+              </p>
+            ) : (
+              <p className="text-sm text-[var(--text-muted)]">
+                Con el interruptor apagado no hay ningún aviso programado.
+              </p>
+            )}
+
+            <Button
+              variant="secondary"
+              fullWidth
+              loading={probando}
+              disabled={!puedeAvisar}
+              onClick={() => void probar()}
+            >
+              Probar notificación
+            </Button>
+
+            {errorAvisos ? (
+              <ErrorBanner
+                title={errorAvisos.titulo}
+                message={errorAvisos.mensaje}
+                onDismiss={() => setErrorAvisos(null)}
+              />
+            ) : null}
+
+            {/* Lo que esta app NO puede prometer. Se dice siempre, no se esconde. */}
+            <p className="text-xs leading-relaxed text-[var(--text-muted)]">{AVISO_LIMITACION}</p>
+          </>
+        )}
       </Card>
 
       {/* ------------------------------------------------------------- */}

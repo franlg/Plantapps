@@ -141,6 +141,34 @@ describe('<Acordeon>', () => {
     expect(screen.getByRole('region')).toHaveAttribute('id', panelId)
   })
 
+  it('el título es un encabezado real que envuelve al botón', () => {
+    // Sin esto, la pantalla se queda sin jerarquía de encabezados y quien navega
+    // con lector de pantalla pierde la estructura del contenido.
+    const { container } = render(
+      <Acordeon titulo="Necesitan agua" abierto>
+        <p>Monstera</p>
+      </Acordeon>,
+    )
+
+    const encabezado = container.querySelector('h2')
+    expect(encabezado).not.toBeNull()
+    expect(encabezado).toHaveTextContent('Necesitan agua')
+    // El botón vive dentro del encabezado: el título sigue siendo pulsable.
+    expect(encabezado?.querySelector('button')).not.toBeNull()
+    expect(encabezado?.className).toContain('m-0')
+  })
+
+  it('el nivel del encabezado es configurable', () => {
+    const { container } = render(
+      <Acordeon titulo="Anidado" nivel={3} abierto>
+        <p>Contenido</p>
+      </Acordeon>,
+    )
+
+    expect(container.querySelector('h2')).toBeNull()
+    expect(container.querySelector('h3')).not.toBeNull()
+  })
+
   it('la cabecera es un botón de 44 px con la etiqueta para lectores de pantalla', () => {
     render(
       <Acordeon titulo="Necesitan agua" etiqueta="Desplegar las plantas secas" abierto={false}>
