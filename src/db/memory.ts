@@ -3,13 +3,23 @@ import type {
   AiAnalysisDraft,
   AppSettings,
   CareEvent,
+  GuiaCuidados,
+  GuiaCuidadosDraft,
   ID,
   NewCareEvent,
   NewPlant,
   Plant,
   StoredPhoto,
 } from '@/types'
-import type { AnalysisRepo, Db, EventRepo, PhotoRepo, PlantRepo, SettingsRepo } from '@/services/contracts'
+import type {
+  AnalysisRepo,
+  Db,
+  EventRepo,
+  GuideRepo,
+  PhotoRepo,
+  PlantRepo,
+  SettingsRepo,
+} from '@/services/contracts'
 import { SETTINGS_POR_DEFECTO } from '@/types'
 import { createReminderService } from '@/services/reminders'
 import { nowIso } from '@/lib/dates'
@@ -27,6 +37,8 @@ export function createMemoryDb(): Db {
   const events = new Map<ID, CareEvent>()
   const photos = new Map<ID, StoredPhoto>()
   const analyses = new Map<ID, AiAnalysis>()
+  /** Una guía vigente por planta. */
+  const guias = new Map<ID, GuiaCuidados>()
   const objectUrls = new Map<ID, string>()
   let settings: AppSettings = { ...SETTINGS_POR_DEFECTO }
   const listeners = new Set<Listener>()
@@ -84,6 +96,7 @@ export function createMemoryDb(): Db {
       plants.delete(id)
       for (const e of events.values()) if (e.plantId === id) events.delete(e.id)
       for (const a of analyses.values()) if (a.plantId === id) analyses.delete(a.id)
+      guias.delete(id)
       notify()
     },
     async setFotoPortada(id, photoId) {
@@ -194,6 +207,22 @@ export function createMemoryDb(): Db {
     },
   }
 
+  const guidesRepo: GuideRepo = {
+    async get(plantId) {
+      return guias.get(plantId)
+    },
+    async create(draft: GuiaCuidadosDraft & { plantId: ID; modelo: string }) {
+      const guia: GuiaCuidados = { ...draft, id: newId(), generadoEn: nowIso() }
+      guias.set(guia.plantId, guia)
+      notify()
+      return guia
+    },
+    async remove(plantId) {
+      guias.delete(plantId)
+      notify()
+    },
+  }
+
   const settingsRepo: SettingsRepo = {
     async get() {
       return settings
@@ -223,6 +252,7 @@ export function createMemoryDb(): Db {
     events: eventsRepo,
     photos: photosRepo,
     analyses: analysesRepo,
+    guides: guidesRepo,
     settings: settingsRepo,
 
     reminders: createReminderService({
@@ -235,6 +265,7 @@ export function createMemoryDb(): Db {
       plants.clear()
       events.clear()
       analyses.clear()
+      guias.clear()
       for (const id of [...photos.keys()]) photosRepo.release(id)
       photos.clear()
       settings = { ...SETTINGS_POR_DEFECTO }

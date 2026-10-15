@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Db } from '@/services/contracts'
-import type { AiAnalysis, AppSettings, AttentionItem, CareEvent, ID, Plant } from '@/types'
+import type { AiAnalysis, AppSettings, AttentionItem, CareEvent, GuiaCuidados, ID, Plant } from '@/types'
 import { SETTINGS_POR_DEFECTO } from '@/types'
 
 const DbContext = createContext<Db | null>(null)
@@ -65,6 +65,15 @@ export function useTimeline(plantId: ID | undefined): CareEvent[] {
 /** Análisis de IA de una planta, más recientes primero. */
 export function useAnalyses(plantId: ID | undefined): AiAnalysis[] {
   return useQuery<AiAnalysis[]>((db) => (plantId ? db.analyses.listByPlant(plantId) : Promise.resolve([])), [plantId], [])
+}
+
+/** Guía de cuidados vigente de una planta, o undefined si nunca se ha pedido. */
+export function useGuia(plantId: ID | undefined): GuiaCuidados | undefined {
+  return useQuery<GuiaCuidados | undefined>(
+    (db) => (plantId ? db.guides.get(plantId) : Promise.resolve(undefined)),
+    [plantId],
+    undefined,
+  )
 }
 
 /** Plantas que requieren atención, ordenadas por urgencia. */

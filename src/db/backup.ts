@@ -1,5 +1,15 @@
 import type { BackupFile, BackupService, Db, ImportReport } from '@/services/contracts'
-import type { AiAnalysis, CareEvent, Confianza, Gravedad, Luz, Plant, StoredPhoto, Veredicto } from '@/types'
+import type {
+  AiAnalysis,
+  CareEvent,
+  Confianza,
+  GuiaCuidados,
+  Gravedad,
+  Luz,
+  Plant,
+  StoredPhoto,
+  Veredicto,
+} from '@/types'
 import { z } from 'zod'
 import { TIPOS_EVENTO } from '@/types'
 import { nowIso } from '@/lib/dates'
@@ -21,6 +31,7 @@ export interface RawSnapshot {
   plants: Plant[]
   events: CareEvent[]
   analyses: AiAnalysis[]
+  guias: GuiaCuidados[]
   fotos: StoredPhoto[]
 }
 
@@ -124,6 +135,27 @@ const fotoSchema = z.object({
   height: z.number().int().nonnegative(),
 })
 
+const seccionSchema = z.object({
+  titulo: z.string().min(1),
+  contenido: z.string(),
+  puntos: z.array(z.string()).optional(),
+})
+
+const guiaSchema = z.object({
+  id: z.string().min(1),
+  plantId: z.string().min(1),
+  nombreComun: z.string(),
+  nombreCientifico: z.string(),
+  familia: z.string(),
+  resumen: z.string(),
+  secciones: z.array(seccionSchema),
+  frecuenciaRiegoDias: z.number().int().min(1).max(90).nullable(),
+  dificultad: z.enum(['facil', 'media', 'avanzada']),
+  basadaEnContexto: z.boolean(),
+  generadoEn: fechaSchema,
+  modelo: z.string(),
+})
+
 const copiaSchema = z.object({
   formato: z.literal('plantapps-backup'),
   version: z.literal(1),
@@ -131,6 +163,8 @@ const copiaSchema = z.object({
   plants: z.array(plantSchema),
   events: z.array(eventSchema),
   analyses: z.array(analysisSchema),
+  // Con `.default([])` las copias hechas antes de las guías siguen importando bien.
+  guias: z.array(guiaSchema).default([]),
   fotos: z.array(fotoSchema),
 })
 
@@ -254,8 +288,11 @@ export function createBackupService(db: Db): BackupServiceConTexto {
       const events = await db.events.listRecent()
 
       const analyses: AiAnalysis[] = []
+      const guias: GuiaCuidados[] = []
       for (const planta of plants) {
         analyses.push(...(await db.analyses.listByPlant(planta.id)))
+        const guia = await db.guides.get(planta.id)
+        if (guia) guias.push(guia)
       }
 
       const fotos: BackupFile['fotos'] = []
@@ -277,6 +314,7 @@ export function createBackupService(db: Db): BackupServiceConTexto {
         plants,
         events,
         analyses,
+        guias: guias,
         fotos,
       }
     },
@@ -320,6 +358,7 @@ export function createBackupService(db: Db): BackupServiceConTexto {
         plants: copia.plants,
         events: copia.events,
         analyses: copia.analyses,
+        guias: copia.guias,
         fotos,
       })
       db.notify()
@@ -328,6 +367,7 @@ export function createBackupService(db: Db): BackupServiceConTexto {
         plants: copia.plants.length,
         events: copia.events.length,
         analyses: copia.analyses.length,
+        guias: copia.guias.length,
         fotos: fotos.length,
       }
     },

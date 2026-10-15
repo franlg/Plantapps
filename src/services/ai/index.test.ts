@@ -27,6 +27,7 @@ const AJUSTES: AppSettings = {
   apiKey: 'clave-de-prueba',
   modelo: 'modelo-principal',
   modeloFallback: 'modelo-respaldo',
+  recordatorios: { activos: false, hora: '09:00', diasAnticipacion: 0 },
 }
 
 const CONTEXTO: PlantContext = {
@@ -166,7 +167,7 @@ describe('aiService.analyze', () => {
   })
 
   it('falla con sin_clave si no hay clave en Ajustes, sin llamar a la red', async () => {
-    mockSettingsGet.mockResolvedValue({ modelo: 'modelo-principal', modeloFallback: 'modelo-respaldo' })
+    mockSettingsGet.mockResolvedValue({ modelo: 'modelo-principal', modeloFallback: 'modelo-respaldo', recordatorios: AJUSTES.recordatorios })
     const { aiService } = await cargarServicio()
 
     const error = await expectAiError(aiService.analyze(ENTRADA), 'sin_clave')
@@ -258,7 +259,7 @@ describe('aiService.analyze', () => {
 
 describe('aiService.isConfigured', () => {
   it('es false cuando no hay clave guardada', async () => {
-    mockSettingsGet.mockResolvedValue({ modelo: 'm', modeloFallback: 'r' })
+    mockSettingsGet.mockResolvedValue({ modelo: 'm', modeloFallback: 'r', recordatorios: AJUSTES.recordatorios })
     const { aiService, precargarAjustes } = await cargarServicio()
 
     await precargarAjustes()

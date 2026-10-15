@@ -101,4 +101,14 @@ export const aiService: AiService = {
     return Boolean(ajustesCache?.apiKey?.trim())
   },
   analyze: analizar,
+
+  // MARCADORES: los sustituye el agente de IA con prompt y esquema reales.
+  // La firma ya está congelada en `AiService`, así que la interfaz puede
+  // programarse contra ellas sin esperar a este servicio.
+  async generarGuia() {
+    throw new AiError('La guía de cuidados todavía no está disponible', 'desconocido')
+  },
+  async identificar() {
+    throw new AiError('La identificación todavía no está disponible', 'desconocido')
+  },
 }

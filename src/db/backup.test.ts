@@ -101,6 +101,7 @@ describe('Copias de seguridad', () => {
       plants: [],
       events: [],
       analyses: [],
+      guias: [],
       fotos: [],
     })
   })
@@ -127,7 +128,7 @@ describe('Copias de seguridad', () => {
 
     const informe = await servicio.importAll(desdeArchivo, 'reemplazar')
 
-    expect(informe).toEqual({ plants: 2, events: 3, analyses: 1, fotos: 1 })
+    expect(informe).toEqual({ plants: 2, events: 3, analyses: 1, guias: 0, fotos: 1 })
 
     const plantas = await db.plants.list({ incluirArchivadas: true })
     expect(plantas).toEqual(copia.plants)
@@ -164,7 +165,7 @@ describe('Copias de seguridad', () => {
     const previa = await destino.plants.create({ nombre: 'Poto previa' })
 
     const informe = await servicioDestino.importAll(copia, 'fusionar')
-    expect(informe).toEqual({ plants: 2, events: 3, analyses: 1, fotos: 1 })
+    expect(informe).toEqual({ plants: 2, events: 3, analyses: 1, guias: 0, fotos: 1 })
     expect((await destino.plants.list({ incluirArchivadas: true })).map((p) => p.nombre)).toEqual([
       'Cactus archivado',
       'Monstera del salón',
@@ -179,7 +180,7 @@ describe('Copias de seguridad', () => {
     }
     const segundoInforme = await servicioDestino.importAll(renombrada, 'fusionar')
 
-    expect(segundoInforme).toEqual({ plants: 2, events: 3, analyses: 1, fotos: 1 })
+    expect(segundoInforme).toEqual({ plants: 2, events: 3, analyses: 1, guias: 0, fotos: 1 })
     const plantas = await destino.plants.list({ incluirArchivadas: true })
     expect(plantas).toHaveLength(3)
     expect(plantas.filter((p) => p.nombre.startsWith('Monstera'))).toHaveLength(1)

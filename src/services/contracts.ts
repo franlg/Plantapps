@@ -5,7 +5,12 @@ import type {
   AppSettings,
   AttentionItem,
   CareEvent,
+  GuiaCuidados,
+  GuiaCuidadosDraft,
+  GuiaInput,
   ID,
+  IdentificacionDraft,
+  IdentificarInput,
   NewCareEvent,
   NewPlant,
   Plant,
@@ -66,6 +71,16 @@ export interface AnalysisRepo {
   remove(id: ID): Promise<void>
 }
 
+/** Una guía de cuidados por planta. Como mucho una vigente a la vez. */
+export interface GuideRepo {
+  /** Guía vigente de una planta, o undefined si nunca se ha pedido. */
+  get(plantId: ID): Promise<GuiaCuidados | undefined>
+  /** Guarda una guía. Sustituye a la anterior si la había. */
+  create(draft: GuiaCuidadosDraft & { plantId: ID; modelo: string }): Promise<GuiaCuidados>
+  /** Borra la guía de una planta. No lanza si no había ninguna. */
+  remove(plantId: ID): Promise<void>
+}
+
 export interface SettingsRepo {
   get(): Promise<AppSettings>
   save(patch: Partial<AppSettings>): Promise<AppSettings>
@@ -84,6 +99,7 @@ export interface Db {
   events: EventRepo
   photos: PhotoRepo
   analyses: AnalysisRepo
+  guides: GuideRepo
   settings: SettingsRepo
   reminders: ReminderService
 
@@ -101,6 +117,10 @@ export interface Db {
 export interface AiService {
   isConfigured(): boolean
   analyze(input: AiAnalyzeInput): Promise<AiAnalysisDraft>
+  /** Guía de cuidados por secciones, con la planta como contexto. */
+  generarGuia(input: GuiaInput): Promise<GuiaCuidadosDraft>
+  /** Identifica la especie a partir de una foto. `especie: null` si no puede. */
+  identificar(input: IdentificarInput): Promise<IdentificacionDraft>
 }
 
 /** Copia de seguridad completa en un único archivo JSON. */
@@ -111,6 +131,8 @@ export interface BackupFile {
   plants: Plant[]
   events: CareEvent[]
   analyses: AiAnalysis[]
+  /** Guías de cuidados, una por planta como mucho. */
+  guias: GuiaCuidados[]
   /** Fotos en base64 (sin el prefijo data:). */
   fotos: Array<{ id: ID; mime: string; base64: string; thumbBase64: string; width: number; height: number }>
 }
@@ -119,6 +141,7 @@ export interface ImportReport {
   plants: number
   events: number
   analyses: number
+  guias: number
   fotos: number
 }
 

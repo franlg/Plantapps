@@ -1,6 +1,8 @@
 import type { ID } from './plant'
 import type { CareEvent } from './event'
 import type { AiAnalysis } from './ai'
+import type { ConfigRecordatorios } from './recordatorio'
+import { CONFIG_RECORDATORIOS_POR_DEFECTO } from './recordatorio'
 
 /** Ajustes de la aplicación, guardados solo en este dispositivo. */
 export interface AppSettings {
@@ -10,6 +12,8 @@ export interface AppSettings {
   modelo: string
   /** Modelo de respaldo si el principal falla o agota cuota. */
   modeloFallback: string
+  /** Recordatorios de riego. */
+  recordatorios: ConfigRecordatorios
   /** ISO datetime de la última copia de seguridad exportada. */
   ultimaCopia?: string
 }
@@ -20,6 +24,7 @@ export const SETTINGS_POR_DEFECTO: AppSettings = {
   modelo: 'gemini-3.6-flash',
   // El más estable y barato del nivel gratuito.
   modeloFallback: 'gemini-3.5-flash-lite',
+  recordatorios: CONFIG_RECORDATORIOS_POR_DEFECTO,
 }
 
 /** Modelos del nivel gratuito conocidos, para el selector de Ajustes. */

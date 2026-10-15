@@ -5,13 +5,22 @@ import type {
   AiAnalysisDraft,
   AppSettings,
   CareEvent,
+  GuiaCuidados,
   ID,
   NewCareEvent,
   NewPlant,
   Plant,
   StoredPhoto,
 } from '@/types'
-import type { AnalysisRepo, Db, EventRepo, PhotoRepo, PlantRepo, SettingsRepo } from '@/services/contracts'
+import type {
+  AnalysisRepo,
+  Db,
+  EventRepo,
+  GuideRepo,
+  PhotoRepo,
+  PlantRepo,
+  SettingsRepo,
+} from '@/services/contracts'
 import type { RawSnapshot, RawStore } from './backup'
 import { SETTINGS_POR_DEFECTO } from '@/types'
 import { createReminderService } from '@/services/reminders'
@@ -281,6 +290,26 @@ export function createIndexedDb(nombreBd: string = NOMBRE_POR_DEFECTO): Db {
     }
   }
 
+  // MARCADOR: la tabla `guides` en Dexie la implementa el agente de datos.
+// Hasta entonces la guía no sobrevive a la recarga, pero la app funciona.
+  const guiasT = new Map<ID, GuiaCuidados>()
+
+  const guidesRepo: GuideRepo = {
+    async get(plantId) {
+      return guiasT.get(plantId)
+    },
+    async create(draft) {
+      const guia: GuiaCuidados = { ...draft, id: newId(), generadoEn: nowIso() }
+      guiasT.set(guia.plantId, guia)
+      notify()
+      return guia
+    },
+    async remove(plantId) {
+      guiasT.delete(plantId)
+      notify()
+    },
+  }
+
   const db: Db = {
     get version() {
       return version
@@ -299,6 +328,7 @@ export function createIndexedDb(nombreBd: string = NOMBRE_POR_DEFECTO): Db {
     events: eventsRepo,
     photos: photosRepo,
     analyses: analysesRepo,
+    guides: guidesRepo,
     settings: settingsRepo,
 
     reminders: createReminderService({
