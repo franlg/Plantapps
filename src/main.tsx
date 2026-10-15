@@ -6,15 +6,21 @@ import { db } from './db'
 import { DbProvider } from './db/context'
 import { registrarServiceWorker } from '@/services/pwa'
 import { aplicarTema, temaInicial } from '@/ui/screens/datos'
+import { restaurarRuta } from '@/lib/redirect'
 
 /**
  * Arranque.
  *
- * Antes de pintar nada se aplica el tema: así la app no aparece en claro y
- * salta a oscuro en un móvil en modo oscuro, que es justo lo que más molesta.
- * Después se registra el service worker (una sola vez) y se refleja la conexión
- * en `<html data-conexion>`; el estado que usa React lo lleva `useOnline()`.
+ * Lo primero es recuperar la ruta: si has abierto un enlace directo a una
+ * pantalla, GitHub Pages habrá servido su `404.html`, que nos deja la URL a
+ * medias. Sin esto, recargar estando en la ficha de una planta te sacaría de la
+ * app. Va antes de pintar nada para que el enrutador ya vea la ruta buena.
+ * Después se aplica el tema: así la app no aparece en claro y salta a oscuro en
+ * un móvil en modo oscuro, que es justo lo que más molesta. Luego se registra el
+ * service worker (una sola vez) y se refleja la conexión en
+ * `<html data-conexion>`; el estado que usa React lo lleva `useOnline()`.
  */
+restaurarRuta()
 aplicarTema(temaInicial())
 registrarServiceWorker()
 

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Plantapps</title>
+    <meta name="robots" content="noindex" />
+    <script>
+      /*
+       * GitHub Pages no entiende de rutas: si abres un enlace directo a una
+       * pantalla (por ejemplo, la ficha de una planta), el servidor responde con
+       * esta página en vez de con la app.
+       *
+       * Guardamos la URL pedida y volvemos al inicio de la aplicación, que al
+       * arrancar la recupera y la pone en la barra de direcciones (ver
+       * `src/lib/redirect.ts`). El usuario ve la pantalla correcta desde el
+       * primer momento y solo tarda un instante más en cargar.
+       */
+      ;(function () {
+        try {
+          sessionStorage.setItem('plantapps:redirect', window.location.href)
+        } catch (error) {
+          // Modo privado o almacenamiento bloqueado: seguimos al inicio y listo.
+        }
+        // La ruta base debe coincidir con `base` de vite.config.ts.
+        window.location.replace('/Plantapps/')
+      })()
+    </script>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        gap: 0.75rem;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        background: #f6f8f4;
+        color: #5d6b62;
+        text-align: center;
+        padding: 2rem;
+      }
+    </style>
+  </head>
+  <body>
+    <p>Abriendo Plantapps…</p>
+    <noscript>
+      <p>Esta aplicación necesita JavaScript para funcionar.</p>
+    </noscript>
+  </body>
+</html>
