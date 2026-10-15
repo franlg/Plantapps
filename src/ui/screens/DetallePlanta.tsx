@@ -55,9 +55,24 @@ import {
   useEstadosRiego,
   useVistaFoto,
 } from '@/ui/screens/datos'
+import { cn } from '@/lib/cn'
 import type { AvisoError } from '@/ui/screens/datos'
 import { AiError, DIFICULTAD_LABELS, EVENTO_EMOJI, EVENTO_LABELS, GRAVEDAD_LABELS, LUZ_LABELS } from '@/types'
 import type { AiAnalysis, CareEvent, GuiaCuidados, IdentificacionDraft } from '@/types'
+
+/**
+ * De dónde sale la foto que se manda a la IA.
+ *
+ * `portada` reutiliza la foto que ya está subida en la ficha, que es lo que
+ * quiere la mayoría de las veces: no hace falta volver a hacer la foto cada vez.
+ */
+type FuenteFoto = 'camara' | 'galeria' | 'portada'
+
+const ETIQUETAS_FUENTE: Record<FuenteFoto, string> = {
+  camara: 'Cámara',
+  galeria: 'Galería',
+  portada: 'La de la ficha',
+}
 
 /**
  * Aviso de error de la pantalla. El reintento viaja dentro del mismo objeto y
@@ -66,6 +81,57 @@ import type { AiAnalysis, CareEvent, GuiaCuidados, IdentificacionDraft } from '@
  */
 interface ErrorPantalla extends AvisoError {
   reintentar?: () => void
+}
+
+/**
+ * Selector de foto, igual en los tres sitios donde hace falta.
+ *
+ * Muestra "La de la ficha" solo si la planta tiene portada, y cuando ya hay una
+ * foto elegida deja **retirarla** para poder empezar de cero o elegir otra, en
+ * lugar de tener que adivinar cómo se cambia.
+ */
+function SelectorFoto({
+  valor,
+  onElegir,
+  onRetirar,
+  hayPortada,
+  cargando = false,
+  className,
+}: {
+  valor: FuenteFoto
+  onElegir: (fuente: FuenteFoto) => void
+  /** Quita la foto elegida y vuelve a mostrar el selector. */
+  onRetirar: () => void
+  hayPortada: boolean
+  cargando?: boolean
+  className?: string
+}) {
+  const opciones: Array<{ value: FuenteFoto; label: string }> = hayPortada
+    ? [
+        { value: 'camara', label: ETIQUETAS_FUENTE.camara },
+        { value: 'galeria', label: ETIQUETAS_FUENTE.galeria },
+        { value: 'portada', label: ETIQUETAS_FUENTE.portada },
+      ]
+    : [
+        { value: 'camara', label: ETIQUETAS_FUENTE.camara },
+        { value: 'galeria', label: ETIQUETAS_FUENTE.galeria },
+      ]
+
+  return (
+    <div className={cn('flex flex-col gap-2', className)}>
+      <SegmentedControl
+        value={valor}
+        options={opciones}
+        onChange={(fuente) => onElegir(fuente)}
+        ariaLabel="De dónde sacar la foto"
+      />
+      {cargando ? null : (
+        <Button variant="ghost" size="sm" onClick={onRetirar}>
+          Usar otra foto
+        </Button>
+      )}
+    </div>
+  )
 }
 
 /** Barra de salud 0-100, que se lee de un vistazo. */
@@ -405,6 +471,7 @@ export function DetallePlanta() {
   // Estado del panel de IA.
   const [panelAbierto, setPanelAbierto] = useState(false)
   const [foto, setFoto] = useState<File | null>(null)
+  const [fuenteAnalisis, setFuenteAnalisis] = useState<FuenteFoto>('camara')
   const [analizando, setAnalizando] = useState(false)
   const [resultado, setResultado] = useState<AiAnalysis | null>(null)
   const [error, setError] = useState<ErrorPantalla | null>(null)
@@ -418,7 +485,7 @@ export function DetallePlanta() {
 
   // Estado de "¿qué planta es?".
   const [identificarAbierto, setIdentificarAbierto] = useState(false)
-  const [fuenteFoto, setFuenteFoto] = useState<'camara' | 'galeria'>('camara')
+  const [fuenteFoto, setFuenteFoto] = useState<FuenteFoto>('camara')
   const [fotoIdentificar, setFotoIdentificar] = useState<File | null>(null)
   const [identificando, setIdentificando] = useState(false)
   const [identificacion, setIdentificacion] = useState<IdentificacionDraft | null>(null)
@@ -485,11 +552,29 @@ export function DetallePlanta() {
     }
   }
 
-  const elegirFoto = async (fuente: 'camara' | 'galeria') => {
+  /**
+   * La foto que ya está en la ficha de la planta, como si la hubiera elegido el
+   * usuario a mano. Evita tener que volver a hacer la foto para cada análisis.
+   */
+  const fotoDePortada = async (): Promise<File | null> => {
+    if (!planta?.fotoPortadaId) return null
+    const guardada = await db.photos.get(planta.fotoPortadaId)
+    if (!guardada) return null
+    return new File([guardada.blob], 'foto-de-la-ficha.jpg', { type: guardada.blob.type })
+  }
+
+  /** Elige una foto desde la fuente indicada y la deja lista para analizar. */
+  const tomarFoto = async (fuente: FuenteFoto): Promise<File | null> => {
+    if (fuente === 'portada') return fotoDePortada()
+    return pickPhoto(fuente)
+  }
+
+  const elegirFoto = async (fuente: FuenteFoto) => {
     if (!plantaId) return
     cerrarError()
+    setFuenteAnalisis(fuente)
     try {
-      const archivo = await pickPhoto(fuente)
+      const archivo = await tomarFoto(fuente)
       if (!archivo) return
       setFoto(archivo)
       setResultado(null)
@@ -621,11 +706,11 @@ export function DetallePlanta() {
     setRiegoElegido(null)
   }
 
-  const elegirFotoIdentificar = async (fuente: 'camara' | 'galeria') => {
+  const elegirFotoIdentificar = async (fuente: FuenteFoto) => {
     setFuenteFoto(fuente)
     setErrorIdentificar(null)
     try {
-      const archivo = await pickPhoto(fuente)
+      const archivo = await tomarFoto(fuente)
       if (!archivo) return
       setFotoIdentificar(archivo)
       setIdentificacion(null)
@@ -944,35 +1029,33 @@ export function DetallePlanta() {
                     className="mt-3 aspect-4/3 w-full rounded-2xl object-cover"
                   />
                 ) : (
-                  <div className="mt-3 flex flex-col gap-2">
-                    <p className="text-base text-[var(--text)]">
-                      Hazle una foto a la planta y te digo si toca regar, trasplantar o si tiene algo.
-                    </p>
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      <Button className="flex-1" onClick={() => void elegirFoto('camara')}>
-                        Hacer foto
-                      </Button>
-                      <Button variant="secondary" className="flex-1" onClick={() => void elegirFoto('galeria')}>
-                        Elegir de la galería
-                      </Button>
-                    </div>
-                  </div>
+                  <p className="mt-3 text-base text-[var(--text)]">
+                    Hazle una foto a la planta y te digo si toca regar, trasplantar o si tiene algo.
+                  </p>
                 )}
 
+                <SelectorFoto
+                  valor={fuenteAnalisis}
+                  onElegir={(fuente) => void elegirFoto(fuente)}
+                  onRetirar={() => {
+                    setFoto(null)
+                    setResultado(null)
+                  }}
+                  hayPortada={Boolean(planta?.fotoPortadaId)}
+                  cargando={analizando}
+                  className="mt-3"
+                />
+
                 {vistaFoto ? (
-                  <div className="mt-3 flex gap-2">
-                    <Button
-                      className="flex-1"
-                      size="lg"
-                      loading={analizando}
-                      onClick={() => void analizar()}
-                    >
-                      Analizar
-                    </Button>
-                    <Button variant="secondary" onClick={() => void elegirFoto('camara')}>
-                      Otra foto
-                    </Button>
-                  </div>
+                  <Button
+                    className="mt-3"
+                    size="lg"
+                    fullWidth
+                    loading={analizando}
+                    onClick={() => void analizar()}
+                  >
+                    Analizar
+                  </Button>
                 ) : null}
 
                 {analizando ? (
@@ -1190,6 +1273,9 @@ export function DetallePlanta() {
                   options={[
                     { value: 'camara', label: 'Cámara' },
                     { value: 'galeria', label: 'Galería' },
+                    ...(planta?.fotoPortadaId
+                      ? [{ value: 'portada' as const, label: 'La de la ficha' }]
+                      : []),
                   ]}
                   onChange={(fuente) => void elegirFotoIdentificar(fuente)}
                   ariaLabel="De dónde sacar la foto"
@@ -1221,7 +1307,10 @@ export function DetallePlanta() {
               <PanelIdentificacion
                 identificacion={identificacion}
                 tablaDias={tablaIdentificacion}
-                onRepetir={() => void elegirFotoIdentificar('camara')}
+                onRepetir={() => {
+                  setIdentificacion(null)
+                  void elegirFotoIdentificar('camara')
+                }}
                 onPedirTabla={() => {
                   setRiegoElegido(tablaIdentificacion)
                   setRellenoAbierto(true)

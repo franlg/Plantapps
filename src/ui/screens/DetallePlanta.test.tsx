@@ -139,7 +139,7 @@ describe('<DetallePlanta>', () => {
     expect(screen.getByRole('link', { name: /Ir a Ajustes/i })).toHaveAttribute('href', '/ajustes')
     // Sin clave no se ofrece ni la cámara ni el botón de analizar.
     expect(screen.queryByRole('button', { name: /^Analizar$/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Hacer foto/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: /Cámara/i })).not.toBeInTheDocument()
   })
 
   it('registra un riego y lo añade al historial', async () => {
@@ -186,6 +186,88 @@ describe('<DetallePlanta>', () => {
     expect(await screen.findByText('Otra pantalla')).toBeInTheDocument()
   })
 
+  it('ofrece reusable la foto que ya está en la ficha, sin volver a hacerla', async () => {
+    const user = usuario()
+    vi.mocked(aiService.analyze).mockResolvedValue(BORRADOR)
+    const espia = espiarObjectURL()
+
+    try {
+      const db = dbDePrueba()
+      await db.settings.save({ apiKey: 'AIza-de-prueba' })
+      const planta = await db.plants.create({ nombre: 'Poto de la mesa', frecuenciaRiegoDias: 9 })
+      const portada = await db.photos.put(new Blob(['la-foto-de-la-ficha'], { type: 'image/jpeg' }))
+      await db.plants.setFotoPortada(planta.id, portada.id)
+
+      renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+      await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
+
+      // La tercera opción aparece solo porque la planta tiene portada.
+      const opcion = await screen.findByRole('radio', { name: /La de la ficha/i })
+      await user.click(opcion)
+      await user.click(await screen.findByRole('button', { name: /^Analizar$/i }))
+
+      await waitFor(() => expect(aiService.analyze).toHaveBeenCalledTimes(1))
+      const enviado = vi.mocked(aiService.analyze).mock.calls[0]?.[0]
+      // Lo que llega a la IA es la foto de la ficha, no una nueva.
+      expect(enviado?.foto).toBeInstanceOf(Blob)
+      const pixeles = await (enviado?.foto as Blob).text()
+      expect(pixeles).toContain('la-foto-de-la-ficha')
+
+      // Y no se ha vuelto a pedir la cámara ni la galería.
+      const { pickPhoto } = await import('@/services/photos')
+      expect(vi.mocked(pickPhoto)).not.toHaveBeenCalled()
+    } finally {
+      espia.restore()
+    }
+  })
+
+  it('no ofrece "la de la ficha" si la planta no tiene portada', async () => {
+    const user = usuario()
+    const espia = espiarObjectURL()
+
+    try {
+      const db = dbDePrueba()
+      await db.settings.save({ apiKey: 'AIza-de-prueba' })
+      const planta = await db.plants.create({ nombre: 'Helecho sin foto' })
+
+      renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+      await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
+
+      expect(await screen.findByRole('radio', { name: /Cámara/i })).toBeInTheDocument()
+      expect(screen.queryByRole('radio', { name: /La de la ficha/i })).not.toBeInTheDocument()
+    } finally {
+      espia.restore()
+    }
+  })
+
+  it('permite cambiar la foto y volver al selector', async () => {
+    const user = usuario()
+    const espia = espiarObjectURL()
+
+    try {
+      const db = dbDePrueba()
+      await db.settings.save({ apiKey: 'AIza-de-prueba' })
+      const planta = await db.plants.create({ nombre: 'Cactus del despacho' })
+
+      renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+      await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
+      await user.click(await screen.findByRole('radio', { name: /Cámara/i }))
+
+      // Con foto elegida aparece el botón de Analizar...
+      expect(await screen.findByRole('button', { name: /^Analizar$/i })).toBeInTheDocument()
+
+      // ...y también el de rehacerla.
+      await user.click(screen.getByRole('button', { name: /Usar otra foto/i }))
+      expect(screen.queryByRole('button', { name: /^Analizar$/i })).not.toBeInTheDocument()
+      expect(screen.getByRole('radio', { name: /Cámara/i })).toBeInTheDocument()
+    } finally {
+      espia.restore()
+    }
+  })
+
   it('analiza la foto, guarda el resultado y lo deja en el historial', async () => {
     const user = usuario()
     vi.mocked(aiService.analyze).mockResolvedValue(BORRADOR)
@@ -200,7 +282,7 @@ describe('<DetallePlanta>', () => {
       renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
 
       await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
-      await user.click(screen.getByRole('button', { name: /Hacer foto/i }))
+      await user.click(await screen.findByRole('radio', { name: /Cámara/i }))
       await user.click(await screen.findByRole('button', { name: /^Analizar$/i }))
 
       // Se le manda la foto y el contexto de la planta, no solo la imagen.
@@ -252,7 +334,7 @@ describe('<DetallePlanta>', () => {
       renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
 
       await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
-      await user.click(screen.getByRole('button', { name: /Hacer foto/i }))
+      await user.click(await screen.findByRole('radio', { name: /Cámara/i }))
       await user.click(await screen.findByRole('button', { name: /^Analizar$/i }))
 
       expect(await screen.findByText('Sin consultas por hoy')).toBeInTheDocument()
