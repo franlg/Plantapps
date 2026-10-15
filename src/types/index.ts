@@ -1,6 +1,7 @@
 export * from './plant'
 export * from './event'
 export * from './photo'
+export * from './foto'
 export * from './ai'
 export * from './settings'
 export * from './guia'

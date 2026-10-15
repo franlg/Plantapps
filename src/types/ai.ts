@@ -60,6 +60,30 @@ export interface AiAnalyzeInput {
   contexto: PlantContext
   /** Modelo a usar; si no, el de ajustes. */
   modelo?: string
+  /**
+   * Foto del análisis anterior. Si se pasa junto con `comparar`, el modelo mira
+   * las dos y dice si la planta ha mejorado, sigue igual o ha empeorado.
+   */
+  fotoAnterior?: Blob
+  /** Pedir explícitamente la comparación entre las dos fotos. */
+  comparar?: boolean
+}
+
+/** Cómo ha evolucionado la planta respecto a la última foto. */
+export type Tendencia = 'mejor' | 'igual' | 'peor'
+
+export interface ComparacionIa {
+  tendencia: Tendencia
+  /** Qué ha cambiado, en lenguaje sencillo. */
+  detalle: string
+  /** `false` si no había foto anterior con la que comparar. */
+  habiaAnterior: boolean
+}
+
+export const TENDENCIA_LABELS: Record<Tendencia, string> = {
+  mejor: 'Ha mejorado',
+  igual: 'Sigue igual',
+  peor: 'Ha empeorado',
 }
 
 /** Lo que devuelve el modelo (validado con Zod antes de persistirlo). */
@@ -81,6 +105,8 @@ export interface AiAnalysisDraft {
   confianza: Confianza
   /** 1-3 frases para leer de un vistazo. */
   resumen: string
+  /** Comparación con la foto anterior, solo si se pidió y había foto previa. */
+  comparacion?: ComparacionIa
 }
 
 /** Análisis guardado, con foto y modelo usados. */

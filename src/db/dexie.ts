@@ -233,6 +233,15 @@ export function createIndexedDb(nombreBd: string = NOMBRE_POR_DEFECTO): Db {
     async get(id) {
       return fotosT.get(id)
     },
+    // MARCADOR: `byIds` en Dexie lo implementa el agente de datos.
+    async byIds(ids) {
+      const salida: StoredPhoto[] = []
+      for (const id of ids) {
+        const foto = await fotosT.get(id)
+        if (foto) salida.push(foto)
+      }
+      return salida
+    },
     async put(blob: Blob, extra) {
       const photo: StoredPhoto = {
         id: newId(),

@@ -50,6 +50,8 @@ export interface EventRepo {
 
 export interface PhotoRepo {
   get(id: ID): Promise<StoredPhoto | undefined>
+  /** Muchas fotos de una vez: la galería de progreso no quiere N awaits. */
+  byIds(ids: readonly ID[]): Promise<StoredPhoto[]>
   /**
    * Almacena una foto ya comprimida.
    * `extra` permite persistir también la miniatura y las medidas reales; si no se

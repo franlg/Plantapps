@@ -1,6 +1,16 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Db } from '@/services/contracts'
-import type { AiAnalysis, AppSettings, AttentionItem, CareEvent, GuiaCuidados, ID, Plant } from '@/types'
+import type {
+  AiAnalysis,
+  AppSettings,
+  AttentionItem,
+  CareEvent,
+  FotoProgreso,
+  GuiaCuidados,
+  ID,
+  Plant,
+} from '@/types'
+import { nowIso } from '@/lib/dates'
 import { SETTINGS_POR_DEFECTO } from '@/types'
 
 const DbContext = createContext<Db | null>(null)
@@ -74,6 +84,88 @@ export function useGuia(plantId: ID | undefined): GuiaCuidados | undefined {
     [plantId],
     undefined,
   )
+}
+
+/**
+ * Fotos del historial visual de una planta, de más reciente a más antigua.
+ * Devuelve solo los ids y los metadatos: la interfaz usa `PhotoThumb` con el id,
+ * que ya sabe pedirle la URL a la base de datos.
+ */
+export function useFotosProgreso(plantId: ID | undefined): FotoProgreso[] {
+  return useQuery<FotoProgreso[]>(
+    async (db) => {
+      if (!plantId) return []
+      const planta = await db.plants.get(plantId)
+      if (!planta) return []
+
+      const analisis = await db.analyses.listByPlant(plantId)
+      const fotos = await db.photos.byIds(
+        analisis.map((a) => a.photoId).filter((id): id is ID => Boolean(id)),
+      )
+      const porId = new Map(fotos.map((f) => [f.id, f]))
+
+      const entradas: FotoProgreso[] = []
+      for (const a of analisis) {
+        if (!a.photoId || !porId.has(a.photoId)) continue
+        entradas.push({
+          id: a.photoId,
+          fecha: a.fecha,
+          origen: 'analisis',
+          analysisId: a.id,
+          veredicto: a.veredicto,
+        })
+      }
+
+      if (planta.fotoPortadaId && porId.has(planta.fotoPortadaId)) {
+        // La portada va la primera si no es ya la del análisis más reciente.
+        const yaEstaba = entradas[0]?.id === planta.fotoPortadaId
+        if (!yaEstaba) {
+          entradas.unshift({ id: planta.fotoPortadaId, fecha: planta.actualizadoEn, origen: 'portada' })
+        }
+      }
+
+      return entradas
+    },
+    [plantId],
+    [],
+  )
+}
+
+/**
+ * Registrar un riego sin salir de la pantalla donde estás.
+ *
+ * Devuelve la planta que se está regando (`pendiente`), para que la tarjeta
+ * muestre que está en marcha, y la función `registrar`, que nunca lanza: si algo
+ * falla lo deja anotado en `error` para que la interfaz lo muestre.
+ */
+export function useRegistrarRiego(): {
+  registrar: (plantId: ID, nota?: string) => Promise<boolean>
+  pendiente: ID | null
+  error: string | null
+  descartarError: () => void
+} {
+  const db = useDb()
+  const [pendiente, setPendiente] = useState<ID | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const registrar = useMemo(
+    () => async (plantId: ID, nota?: string) => {
+      setPendiente(plantId)
+      setError(null)
+      try {
+        await db.events.create({ plantId, tipo: 'riego', fecha: nowIso(), nota })
+        return true
+      } catch (problema) {
+        setError(problema instanceof Error ? problema.message : 'No se ha podido registrar el riego.')
+        return false
+      } finally {
+        setPendiente(null)
+      }
+    },
+    [db],
+  )
+
+  return { registrar, pendiente, error, descartarError: () => setError(null) }
 }
 
 /** Plantas que requieren atención, ordenadas por urgencia. */

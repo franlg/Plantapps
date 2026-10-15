@@ -143,6 +143,14 @@ export function createMemoryDb(): Db {
     async get(id) {
       return photos.get(id)
     },
+    async byIds(ids) {
+      const salida: StoredPhoto[] = []
+      for (const id of ids) {
+        const foto = photos.get(id)
+        if (foto) salida.push(foto)
+      }
+      return salida
+    },
     async put(blob: Blob, extra) {
       const photo: StoredPhoto = {
         id: newId(),
