@@ -46,8 +46,12 @@ const NOMBRE_POR_DEFECTO = 'plantapps'
  * Índices de cada tabla. La clave primaria es `id` en todas menos en `settings`,
  * que usa `clave`. `[plantId+fecha]` es el índice compuesto que da el historial
  * de una planta ya ordenado de más reciente a más antiguo.
+ *
+ * Este es el esquema de la **versión 1**, el que se publicó. Se declara tal cual
+ * para que Dexie lo compare al abrir una base ya existente: si no coincidiera,
+ * Dexie crearía las tablas que faltaran o borraría las que sobraran.
  */
-const ESQUEMA = {
+const ESQUEMA_V1 = {
   plants: 'id, nombre, archivada',
   events: 'id, plantId, fecha, [plantId+fecha]',
   photos: 'id',
@@ -55,25 +59,48 @@ const ESQUEMA = {
   settings: 'clave',
 }
 
-/** Conexión con la base y las cinco tablas tipadas. */
+/**
+ * Esquema de la **versión 2**: exactamente el de la v1 más la tabla `guides`.
+ *
+ * La clave primaria sigue siendo `id` (el de la propia guía) y `plantId` es un
+ * índice: así una copia de seguridad restaura cada guía por su id y, a la vez,
+ * se localiza la guía vigente de una planta sin recorrer la tabla. La regla de
+ * "una planta, una guía vigente" la respeta `guidesRepo`, no el esquema.
+ */
+const ESQUEMA_V2 = {
+  ...ESQUEMA_V1,
+  guides: 'id, plantId',
+}
+
+/** Conexión con la base y las seis tablas tipadas. */
 interface Conexion {
   instance: Dexie
   plants: Table<Plant, ID>
   events: Table<CareEvent, ID>
   photos: Table<StoredPhoto, ID>
   analyses: Table<AiAnalysis, ID>
+  guides: Table<GuiaCuidados, ID>
   settings: Table<SettingsRow, string>
 }
 
 function abrir(nombreBd: string): Conexion {
   const instance = new Dexie(nombreBd)
-  instance.version(1).stores(ESQUEMA)
+  instance.version(1).stores(ESQUEMA_V1)
+  instance
+    .version(2)
+    .stores(ESQUEMA_V2)
+    .upgrade(() => {
+      // La migración de la v1 a la v2 SOLO añade la tabla `guides`. No se borra
+      // ni se reescribe ni una fila de plantas, eventos, análisis, fotos o
+      // ajustes: los datos del usuario se quedan exactamente como estaban.
+    })
   return {
     instance,
     plants: instance.table<Plant, ID>('plants'),
     events: instance.table<CareEvent, ID>('events'),
     photos: instance.table<StoredPhoto, ID>('photos'),
     analyses: instance.table<AiAnalysis, ID>('analyses'),
+    guides: instance.table<GuiaCuidados, ID>('guides'),
     settings: instance.table<SettingsRow, string>('settings'),
   }
 }
@@ -94,12 +121,20 @@ function masRecientePrimero<T extends { fecha: string }>(a: T, b: T): number {
  * Implementación de `Db` sobre IndexedDB con Dexie.
  *
  * Se comporta exactamente igual que la de memoria (mismo orden, mismo borrado en
- * cascada, mismo contador de versión), con la diferencia de que los datos y las
- * fotos sobreviven a la recarga. `src/db/index.ts` decide cuál usar en cada entorno.
+ * cascada, mismo contador de versión), con la diferencia de que los datos, las
+ * fotos y las guías de cuidados sobreviven a la recarga.
+ * `src/db/index.ts` decide cuál usar en cada entorno.
  */
 export function createIndexedDb(nombreBd: string = NOMBRE_POR_DEFECTO): Db {
-  const { instance, plants: plantasT, events: eventosT, photos: fotosT, analyses: analisisT, settings: ajustesT } =
-    abrir(nombreBd)
+  const {
+    instance,
+    plants: plantasT,
+    events: eventosT,
+    photos: fotosT,
+    analyses: analisisT,
+    guides: guiasT,
+    settings: ajustesT,
+  } = abrir(nombreBd)
 
   const objectUrls = new Map<ID, string>()
   const listeners = new Set<Listener>()
@@ -143,10 +178,11 @@ export function createIndexedDb(nombreBd: string = NOMBRE_POR_DEFECTO): Db {
       return next
     },
     async remove(id) {
-      await instance.transaction('rw', plantasT, eventosT, analisisT, async () => {
+      await instance.transaction('rw', plantasT, eventosT, analisisT, guiasT, async () => {
         await plantasT.delete(id)
         await eventosT.where('plantId').equals(id).delete()
         await analisisT.where('plantId').equals(id).delete()
+        await guiasT.where('plantId').equals(id).delete()
       })
       notify()
     },
@@ -262,6 +298,34 @@ export function createIndexedDb(nombreBd: string = NOMBRE_POR_DEFECTO): Db {
     },
   }
 
+  /**
+   * Una guía vigente por planta, guardada en la tabla `guides`.
+   *
+   * La clave primaria es el `id` de la guía (para que una copia de seguridad la
+   * restaure tal cual) y `plantId` es un índice. Como el contrato dice que una
+   * planta solo tiene una guía vigente, `create` borra la anterior de esa misma
+   * planta antes de escribir la nueva, dentro de una transacción: si algo
+   * fallara, la planta se quedaría con su guía de siempre.
+   */
+  const guidesRepo: GuideRepo = {
+    async get(plantId) {
+      return guiasT.where('plantId').equals(plantId).first()
+    },
+    async create(draft) {
+      const guia: GuiaCuidados = { ...draft, id: newId(), generadoEn: nowIso() }
+      await instance.transaction('rw', guiasT, async () => {
+        await guiasT.where('plantId').equals(guia.plantId).delete()
+        await guiasT.put(guia)
+      })
+      notify()
+      return guia
+    },
+    async remove(plantId) {
+      await guiasT.where('plantId').equals(plantId).delete()
+      notify()
+    },
+  }
+
   const settingsRepo: SettingsRepo = {
     async get() {
       const row = await ajustesT.get(CLAVE_AJUSTES)
@@ -277,37 +341,19 @@ export function createIndexedDb(nombreBd: string = NOMBRE_POR_DEFECTO): Db {
 
   /** Vacía todas las tablas y suelta las URL de imagen generadas. */
   async function limpiar(): Promise<void> {
-    await instance.transaction('rw', plantasT, eventosT, fotosT, analisisT, ajustesT, async () => {
+    const todas = [plantasT, eventosT, fotosT, analisisT, guiasT, ajustesT]
+    await instance.transaction('rw', todas, async () => {
       await plantasT.clear()
       await eventosT.clear()
       await analisisT.clear()
       await fotosT.clear()
+      await guiasT.clear()
       await ajustesT.clear()
     })
     for (const [id, url] of objectUrls) {
       URL.revokeObjectURL(url)
       objectUrls.delete(id)
     }
-  }
-
-  // MARCADOR: la tabla `guides` en Dexie la implementa el agente de datos.
-// Hasta entonces la guía no sobrevive a la recarga, pero la app funciona.
-  const guiasT = new Map<ID, GuiaCuidados>()
-
-  const guidesRepo: GuideRepo = {
-    async get(plantId) {
-      return guiasT.get(plantId)
-    },
-    async create(draft) {
-      const guia: GuiaCuidados = { ...draft, id: newId(), generadoEn: nowIso() }
-      guiasT.set(guia.plantId, guia)
-      notify()
-      return guia
-    },
-    async remove(plantId) {
-      guiasT.delete(plantId)
-      notify()
-    },
   }
 
   const db: Db = {
@@ -349,11 +395,18 @@ export function createIndexedDb(nombreBd: string = NOMBRE_POR_DEFECTO): Db {
    * los ids y las marcas de tiempo originales. Ver `src/db/backup.ts`.
    */
   const rawStore: RawStore = {
-    async writeAll({ plants, events, analyses, fotos }: RawSnapshot) {
-      await instance.transaction('rw', plantasT, eventosT, fotosT, analisisT, async () => {
+    async writeAll({ plants, events, analyses, guias, fotos }: RawSnapshot) {
+      await instance.transaction('rw', plantasT, eventosT, fotosT, analisisT, guiasT, async () => {
         for (const foto of fotos) await fotosT.put(foto)
         for (const analisis of analyses) await analisisT.put(analisis)
         for (const evento of events) await eventosT.put(evento)
+        for (const guia of guias) {
+          // Igual que en `guides.create`: la guía que entra sustituye a la que
+          // hubiera de esa planta, así que un "fusionar" tampoco deja dos guías
+          // vigentes para la misma planta.
+          await guiasT.where('plantId').equals(guia.plantId).delete()
+          await guiasT.put(guia)
+        }
         for (const planta of plants) await plantasT.put(planta)
       })
     },

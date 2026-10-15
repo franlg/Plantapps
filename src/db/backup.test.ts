@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import { describe, expect, it } from 'vitest'
 import type { BackupFile } from '@/services/contracts'
-import type { AiAnalysisDraft } from '@/types'
+import type { AiAnalysisDraft, GuiaCuidadosDraft } from '@/types'
 import { createIndexedDb } from './dexie'
 import { createBackupService } from './backup'
 import { createMemoryDb } from './memory'
@@ -55,7 +55,22 @@ const borradorAnalisis: AiAnalysisDraft = {
   resumen: 'La planta va bien pero le falta agua.',
 }
 
-/** Base de pruebas con plantas, historial, análisis y una foto. */
+/** Guía de ejemplo, tal y como la devuelve el modelo. */
+const plantillaGuia: GuiaCuidadosDraft = {
+  nombreComun: 'Monstera',
+  nombreCientifico: 'Monstera deliciosa',
+  familia: 'Araceae',
+  resumen: 'Trepa y aguanta la falta de agua mejor de lo que parece.',
+  secciones: [
+    { titulo: 'Riego', contenido: 'Deja que se sequen los primeros centímetros.' },
+    { titulo: 'Luz', contenido: 'Media sombra.', puntos: ['Le va bien la luz filtrada'] },
+  ],
+  frecuenciaRiegoDias: 7,
+  dificultad: 'facil',
+  basadaEnContexto: true,
+}
+
+/** Base de pruebas con plantas, historial, análisis, una guía y una foto. */
 async function baseConDatos(nombreBd: string) {
   const db = createIndexedDb(nombreBd)
 
@@ -71,21 +86,22 @@ async function baseConDatos(nombreBd: string) {
   })
   const foto = await db.photos.put(fotoFalsa([10, 20, 30]))
   await db.plants.setFotoPortada(monstera.id, foto.id)
-  await db.events.create({ plantId: monstera.id, tipo: 'riego', fecha: haceDias(4), cantidad: '300 ml' })
-  await db.events.create({ plantId: monstera.id, tipo: 'comentario', fecha: haceDias(1), nota: 'Hojas amarillas' })
+  await db.events.create({ plantId: monstera?.id ?? '', tipo: 'riego', fecha: haceDias(4), cantidad: '300 ml' })
+  await db.events.create({ plantId: monstera?.id ?? '', tipo: 'comentario', fecha: haceDias(1), nota: 'Hojas amarillas' })
   const analisis = await db.analyses.create({
     ...borradorAnalisis,
-    plantId: monstera.id,
+    plantId: monstera?.id ?? '',
     photoId: foto.id,
     modelo: 'gemini-3.8-flash',
     raw: '{"ok":true}',
   })
+  const guia = await db.guides.create({ ...plantillaGuia, plantId: monstera?.id ?? '', modelo: 'gemini-3.8-flash' })
 
   const cactus = await db.plants.create({ nombre: 'Cactus archivado', frecuenciaRiegoDias: 21 })
   await db.plants.setArchivada(cactus.id, true)
   await db.events.create({ plantId: cactus.id, tipo: 'riego', fecha: haceDias(9) })
 
-  return { db, monstera: await db.plants.get(monstera.id), foto, analisis, cactus }
+  return { db, monstera: await db.plants.get(monstera.id), foto, analisis, guia, cactus }
 }
 
 describe('Copias de seguridad', () => {
@@ -107,13 +123,15 @@ describe('Copias de seguridad', () => {
   })
 
   it('exporta, borra todo y restaura en modo reemplazar los mismos datos', async () => {
-    const { db, monstera, foto, analisis } = await baseConDatos('copia-reemplazar')
+    const { db, monstera, foto, analisis, guia } = await baseConDatos('copia-reemplazar')
     const servicio = createBackupService(db)
 
     const copia = await servicio.exportAll()
     expect(copia.plants).toHaveLength(2)
     expect(copia.events).toHaveLength(3)
     expect(copia.analyses).toHaveLength(1)
+    expect(copia.guias).toHaveLength(1)
+    expect(copia.guias[0]?.id).toBe(guia.id)
     expect(copia.fotos).toHaveLength(1)
     expect(copia.fotos[0]?.id).toBe(foto.id)
     expect(copia.plants.find((p) => p.id === monstera?.id)?.fotoPortadaId).toBe(foto.id)
@@ -125,10 +143,11 @@ describe('Copias de seguridad', () => {
     expect(await db.plants.list({ incluirArchivadas: true })).toHaveLength(0)
     expect(await db.events.listRecent()).toHaveLength(0)
     expect(await db.photos.get(foto.id)).toBeUndefined()
+    expect(await db.guides.get(monstera?.id ?? '')).toBeUndefined()
 
     const informe = await servicio.importAll(desdeArchivo, 'reemplazar')
 
-    expect(informe).toEqual({ plants: 2, events: 3, analyses: 1, guias: 0, fotos: 1 })
+    expect(informe).toEqual({ plants: 2, events: 3, analyses: 1, guias: 1, fotos: 1 })
 
     const plantas = await db.plants.list({ incluirArchivadas: true })
     expect(plantas).toEqual(copia.plants)
@@ -154,6 +173,12 @@ describe('Copias de seguridad', () => {
     expect(fotoRestaurada?.bytes).toBe(3)
     expect(await bytesDe(fotoRestaurada?.blob)).toEqual([10, 20, 30])
     expect(await bytesDe(fotoRestaurada?.thumb)).toEqual([10, 20, 30])
+
+    // Y la guía vuelve con su id y su fecha de generación originales.
+    const guiaRestaurada = await db.guides.get(monstera?.id ?? '')
+    expect(guiaRestaurada).toEqual(guia)
+    expect(guiaRestaurada?.id).toBe(guia.id)
+    expect(guiaRestaurada?.generadoEn).toBe(guia.generadoEn)
   })
 
   it('importar en modo fusionar no duplica registros', async () => {
@@ -165,7 +190,7 @@ describe('Copias de seguridad', () => {
     const previa = await destino.plants.create({ nombre: 'Poto previa' })
 
     const informe = await servicioDestino.importAll(copia, 'fusionar')
-    expect(informe).toEqual({ plants: 2, events: 3, analyses: 1, guias: 0, fotos: 1 })
+    expect(informe).toEqual({ plants: 2, events: 3, analyses: 1, guias: 1, fotos: 1 })
     expect((await destino.plants.list({ incluirArchivadas: true })).map((p) => p.nombre)).toEqual([
       'Cactus archivado',
       'Monstera del salón',
@@ -180,13 +205,120 @@ describe('Copias de seguridad', () => {
     }
     const segundoInforme = await servicioDestino.importAll(renombrada, 'fusionar')
 
-    expect(segundoInforme).toEqual({ plants: 2, events: 3, analyses: 1, guias: 0, fotos: 1 })
+    expect(segundoInforme).toEqual({ plants: 2, events: 3, analyses: 1, guias: 1, fotos: 1 })
     const plantas = await destino.plants.list({ incluirArchivadas: true })
     expect(plantas).toHaveLength(3)
     expect(plantas.filter((p) => p.nombre.startsWith('Monstera'))).toHaveLength(1)
     expect(await destino.events.listRecent()).toHaveLength(3)
     expect(await destino.analyses.listByPlant(monstera?.id ?? '')).toHaveLength(1)
     expect(await destino.photos.get(foto.id)).toBeDefined()
+    expect(await destino.guides.get(monstera?.id ?? '')).toEqual(copia.guias[0])
+  })
+
+  it('exporta la guía de cuidados de cada planta', async () => {
+    const { db, monstera, guia } = await baseConDatos('copia-guias-exportar')
+
+    const copia = await createBackupService(db).exportAll()
+
+    expect(copia.guias).toHaveLength(1)
+    expect(copia.guias[0]).toEqual(guia)
+
+    // La copia tiene que poder ir y volver por JSON, como cuando se guarda el archivo.
+    const desdeArchivo: BackupFile = JSON.parse(JSON.stringify(copia))
+    const exportada = desdeArchivo.guias[0]
+    expect(exportada?.id).toBe(guia.id)
+    expect(exportada?.plantId).toBe(monstera?.id)
+    expect(exportada?.generadoEn).toBe(guia.generadoEn)
+    expect(exportada?.modelo).toBe('gemini-3.8-flash')
+    expect(exportada?.secciones).toHaveLength(2)
+    expect(exportada?.secciones[1]?.puntos).toEqual(['Le va bien la luz filtrada'])
+  })
+
+  it('exportar, borrar todo y reponer deja la guía con su mismo id y su misma fecha', async () => {
+    const { db, monstera, guia } = await baseConDatos('copia-guias-reemplazar')
+    const servicio = createBackupService(db)
+
+    const copia = await servicio.exportAll()
+    const desdeArchivo: BackupFile = JSON.parse(JSON.stringify(copia))
+
+    await db.clear()
+    expect(await db.guides.get(monstera?.id ?? '')).toBeUndefined()
+
+    const informe = await servicio.importAll(desdeArchivo, 'reemplazar')
+    expect(informe.guias).toBe(1)
+
+    const repuesta = await db.guides.get(monstera?.id ?? '')
+    expect(repuesta?.id).toBe(guia.id)
+    expect(repuesta?.generadoEn).toBe(guia.generadoEn)
+    expect(repuesta?.plantId).toBe(monstera?.id)
+    expect(repuesta?.modelo).toBe('gemini-3.8-flash')
+    expect(repuesta?.secciones).toEqual(guia.secciones)
+    expect(repuesta?.frecuenciaRiegoDias).toBe(7)
+    expect(repuesta?.dificultad).toBe('facil')
+  })
+
+  it('importar en modo fusionar deja una sola guía vigente por planta', async () => {
+    const { db, monstera } = await baseConDatos('copia-guias-fusionar-origen')
+    const copia = await createBackupService(db).exportAll()
+
+    const destino = createIndexedDb('copia-guias-fusionar-destino')
+    const servicioDestino = createBackupService(destino)
+    // El destino ya tenía su propia guía para esa misma planta.
+    const previa = await destino.guides.create({
+      ...plantillaGuia,
+      plantId: monstera?.id ?? '',
+      modelo: 'gemini',
+      resumen: 'La que tenía el destino.',
+    })
+
+    const informe = await servicioDestino.importAll(copia, 'fusionar')
+    expect(informe.guias).toBe(1)
+
+    // La del archivo sustituye a la que había: una planta, una guía vigente.
+    const vigente = await destino.guides.get(monstera?.id ?? '')
+    expect(vigente?.id).toBe(copia.guias[0]?.id)
+    expect(vigente?.id).not.toBe(previa.id)
+    expect(vigente?.resumen).not.toBe('La que tenía el destino.')
+
+    // Y reimportar el mismo archivo otra vez tampoco duplica.
+    await servicioDestino.importAll(copia, 'fusionar')
+    expect((await destino.guides.get(monstera?.id ?? ''))?.id).toBe(copia.guias[0]?.id)
+
+    // Las guías de plantas que no vienen en la copia se quedan como estaban.
+    const otra = await destino.plants.create({ nombre: 'Pleto' })
+    const intacta = await destino.guides.create({ ...plantillaGuia, plantId: otra.id, modelo: 'gemini' })
+    await servicioDestino.importAll(copia, 'fusionar')
+    expect((await destino.guides.get(otra.id))?.id).toBe(intacta.id)
+  })
+
+  it('una copia antigua sin el campo guias sigue importando bien', async () => {
+    const { db, monstera } = await baseConDatos('copia-antigua')
+    const copia = await createBackupService(db).exportAll()
+
+    // Copia hecha antes de que existieran las guías: el campo no está en el JSON.
+    const { guias, ...sinGuias } = copia
+    expect(guias).toHaveLength(1)
+    const textoAntiguo = JSON.stringify(sinGuias)
+    expect(textoAntiguo).not.toContain('"guias"')
+
+    const destino = createIndexedDb('copia-antigua-destino')
+    const servicioDestino = createBackupService(destino)
+
+    const informe = await servicioDestino.importAll(textoAntiguo, 'reemplazar')
+    expect(informe).toEqual({ plants: 2, events: 3, analyses: 1, guias: 0, fotos: 1 })
+    expect((await destino.plants.list({ incluirArchivadas: true })).map((p) => p.nombre)).toEqual([
+      'Cactus archivado',
+      'Monstera del salón',
+    ])
+    expect(await destino.events.listRecent()).toHaveLength(3)
+    expect(await destino.analyses.listByPlant(monstera?.id ?? '')).toHaveLength(1)
+    expect(await destino.guides.get(monstera?.id ?? '')).toBeUndefined()
+
+    // Y en modo fusionar tampoco pisa las guías que ya hubiera.
+    const conPrevia = createIndexedDb('copia-antigua-fusionar')
+    const previa = await conPrevia.guides.create({ ...plantillaGuia, plantId: 'planta-ajena', modelo: 'gemini' })
+    await createBackupService(conPrevia).importAll(textoAntiguo, 'fusionar')
+    expect((await conPrevia.guides.get('planta-ajena'))?.id).toBe(previa.id)
   })
 
   it('rechaza un archivo con otro formato con un error legible en español', async () => {

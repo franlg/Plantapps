@@ -53,3 +53,6 @@ export type { ErrorBannerProps } from './ErrorBanner'
 
 export { ConfirmDialog } from './ConfirmDialog'
 export type { ConfirmDialogProps } from './ConfirmDialog'
+
+export { Acordeon } from './Acordeon'
+export type { AcordeonProps } from './Acordeon'

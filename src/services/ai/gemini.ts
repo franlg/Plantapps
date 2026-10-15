@@ -4,8 +4,10 @@ import { responseSchemaGemini } from './schema'
 /**
  * Cliente mínimo de la API de Gemini.
  *
- * Solo hace falta una llamada (`generateContent` con imagen), así que no se
- * monta ningún SDK: un `fetch` con cabeceras, base64 y traducción de errores.
+ * Todas las funciones de la capa (análisis, guía e identificación) caben en una
+ * llamada a `generateContent`, así que no se monta ningún SDK: un `fetch` con
+ * cabeceras, base64 y traducción de errores. La imagen es opcional (la guía se
+ * puede pedir solo con texto) y el esquema de respuesta lo elige quien llama.
  * La clave viaja en la cabecera `x-goog-api-key` y NUNCA se escribe en el código,
  * ni en los logs, ni en los mensajes de error que ve el usuario.
  */
@@ -21,8 +23,10 @@ export interface LlamarGeminiParams {
   apiKey: string
   modelo: string
   prompt: string
-  /** Foto ya comprimida (JPEG o PNG). */
-  foto: Blob
+  /** Foto ya comprimida (JPEG o PNG). Opcional: hay llamadas solo de texto. */
+  foto?: Blob
+  /** Esquema que se le pide al modelo. Por defecto, el del análisis de foto. */
+  responseSchema?: object
 }
 
 export interface LlamarGeminiResultado {
@@ -147,27 +151,32 @@ export async function llamarGemini({
   modelo,
   prompt,
   foto,
+  responseSchema = responseSchemaGemini(),
 }: LlamarGeminiParams): Promise<LlamarGeminiResultado> {
   const url = `${API_BASE}/${encodeURIComponent(modelo)}:generateContent`
+
+  // Sin foto (la guía se puede pedir solo con los datos de la planta) no se manda
+  // la parte `inline_data`: Gemini acepta peticiones solo de texto.
+  const partes: object[] = [{ text: prompt }]
+  if (foto) {
+    partes.push({
+      inline_data: {
+        mime_type: foto.type || 'image/jpeg',
+        data: await blobABase64(foto),
+      },
+    })
+  }
 
   const cuerpo = {
     contents: [
       {
         role: 'user',
-        parts: [
-          { text: prompt },
-          {
-            inline_data: {
-              mime_type: foto.type || 'image/jpeg',
-              data: await blobABase64(foto),
-            },
-          },
-        ],
+        parts: partes,
       },
     ],
     generationConfig: {
       responseMimeType: 'application/json',
-      responseSchema: responseSchemaGemini(),
+      responseSchema,
       temperature: TEMPERATURA,
     },
   }
@@ -223,7 +232,9 @@ export async function llamarGemini({
 
   if (texto === null) {
     throw new AiError(
-      'Gemini no ha devuelto ningún análisis de la foto. Vuelve a intentarlo con otra imagen.',
+      foto
+        ? 'Gemini no ha devuelto ningún análisis de la foto. Vuelve a intentarlo con otra imagen.'
+        : 'Gemini no ha devuelto ninguna respuesta. Vuelve a intentarlo.',
       'respuesta_invalida',
     )
   }

@@ -1,15 +1,19 @@
-import type { AiAnalyzeInput, AiAnalysisDraft, AppSettings } from '@/types'
+import type { AiAnalyzeInput, AiAnalysisDraft, AppSettings, GuiaCuidadosDraft, GuiaInput, IdentificacionDraft, IdentificarInput } from '@/types'
 import type { AiService } from '@/services/contracts'
 import { AiError } from '@/types'
 import { db } from '@/db'
 import { llamarGemini } from './gemini'
+import { guiaResponseSchemaGemini, construirPromptGuia, parsearGuia } from './guia'
+import { construirPromptIdentificar, identificacionResponseSchemaGemini, parsearIdentificacion } from './identificar'
 import { construirPrompt } from './prompt'
 import { parsearAnalisis } from './schema'
 
 /**
  * SERVICIO DE IA
  * ==============
- * El único punto de entrada de la app: `aiService.analyze(foto + contexto)`.
+ * El único punto de entrada de la app:
+ * `analyze` (foto + contexto → diagnóstico), `generarGuia` (planta → ficha de
+ * cuidados) e `identificar` (foto → especie, o null si no se puede saber).
  *
  * Decisiones:
  * - La clave y los modelos salen de Ajustes (`db.settings`), nunca del código.
@@ -17,7 +21,8 @@ import { parsearAnalisis } from './schema'
  *   los ajustes: se precarga al importar el módulo y se invalida cada vez que
  *   la base de datos cambia de versión (guardar la clave en Ajustes lo refresca).
  * - Si el modelo principal no existe o se acaba la cuota, se reintenta UNA vez
- *   con el modelo de respaldo. Nunca más de 2 peticiones por análisis.
+ *   con el modelo de respaldo. Nunca más de 2 peticiones por operación, sea la
+ *   que sea.
  */
 
 /** Ajustes cacheados para poder responder a `isConfigured()` sin esperar. */
@@ -62,30 +67,47 @@ const FALTA_CLAVE = () => new AiError('Falta la clave de la API. Añádela en Aj
 /** Un fallo con el modelo se puede salvar cambiando de modelo. */
 const REINTENTABLE: ReadonlyArray<AiError['codigo']> = ['modelo_no_disponible', 'cuota']
 
-async function analizar(input: AiAnalyzeInput): Promise<AiAnalysisDraft> {
+/**
+ * Clave y lista de modelos con los que probar: primero el que pide la llamada
+ * (o el de Ajustes), y el de respaldo detrás si son distintos.
+ * Lanza antes de salir a la red si falta la clave o no hay ningún modelo.
+ */
+async function credenciales(modeloPedido: string | undefined): Promise<{ apiKey: string; modelos: string[] }> {
   const ajustes = await leerAjustes()
 
   const apiKey = ajustes.apiKey?.trim()
   if (!apiKey) throw FALTA_CLAVE()
 
   // `?? ''` por robustez: los ajustes vienen de disco y pueden venir incompletos.
-  const principal = input.modelo?.trim() || ajustes.modelo?.trim() || ''
+  const principal = modeloPedido?.trim() || ajustes.modelo?.trim() || ''
   const respaldo = ajustes.modeloFallback?.trim() ?? ''
 
   if (!principal) throw new AiError('No hay ningún modelo configurado. Elige uno en Ajustes.', 'modelo_no_disponible')
 
-  const modelos = respaldo && respaldo !== principal ? [principal, respaldo] : [principal]
+  return {
+    apiKey,
+    modelos: respaldo && respaldo !== principal ? [principal, respaldo] : [principal],
+  }
+}
 
-  const prompt = construirPrompt(input.contexto)
+/**
+ * Ejecuta `operacion` con el modelo principal y, solo si el fallo tiene arreglo
+ * cambiando de modelo, repite UNA vez con el respaldo. Con dos modelos no hay
+ * más de 2 peticiones, aunque los dos fallen.
+ */
+async function conReintento<T>(
+  modelos: string[],
+  operacion: (modelo: string) => Promise<T>,
+  mensaje: string,
+): Promise<T> {
   let ultimoError: AiError | null = null
 
   for (const modelo of modelos) {
     try {
-      const { texto } = await llamarGemini({ apiKey, modelo, prompt, foto: input.foto })
-      return parsearAnalisis(texto)
+      return await operacion(modelo)
     } catch (error) {
       if (!(error instanceof AiError)) {
-        throw new AiError('No se ha podido analizar la planta. Vuelve a intentarlo.', 'desconocido')
+        throw new AiError(mensaje, 'desconocido')
       }
 
       ultimoError = error
@@ -93,7 +115,59 @@ async function analizar(input: AiAnalyzeInput): Promise<AiAnalysisDraft> {
     }
   }
 
-  throw ultimoError ?? new AiError('No se ha podido analizar la planta', 'desconocido')
+  throw ultimoError ?? new AiError(mensaje, 'desconocido')
+}
+
+async function analizar(input: AiAnalyzeInput): Promise<AiAnalysisDraft> {
+  const { apiKey, modelos } = await credenciales(input.modelo)
+  const prompt = construirPrompt(input.contexto)
+
+  return conReintento(
+    modelos,
+    async (modelo) => {
+      const { texto } = await llamarGemini({ apiKey, modelo, prompt, foto: input.foto })
+      return parsearAnalisis(texto)
+    },
+    'No se ha podido analizar la planta. Vuelve a intentarlo.',
+  )
+}
+
+/**
+ * Ficha de cuidados de una planta. La foto es opcional (`GuiaInput.foto`): sin
+ * ella el modelo solo recibe los datos que ya tiene de esa planta.
+ */
+async function generarGuia(input: GuiaInput): Promise<GuiaCuidadosDraft> {
+  const { apiKey, modelos } = await credenciales(input.modelo)
+  const prompt = construirPromptGuia(input.contexto)
+  const responseSchema = guiaResponseSchemaGemini()
+
+  return conReintento(
+    modelos,
+    async (modelo) => {
+      const { texto } = await llamarGemini({ apiKey, modelo, prompt, foto: input.foto, responseSchema })
+      return parsearGuia(texto)
+    },
+    'No se ha podido generar la guía de esta planta. Vuelve a intentarlo.',
+  )
+}
+
+/**
+ * Identifica la especie a partir de una foto. Si el modelo no está seguro
+ * devuelve `especie: null`: eso ya es una respuesta válida, no un error.
+ */
+async function identificar(input: IdentificarInput): Promise<IdentificacionDraft> {
+  const { apiKey, modelos } = await credenciales(input.modelo)
+  const prompt = construirPromptIdentificar({ tieneFoto: Boolean(input.foto), pistas: input.pistas })
+  const responseSchema = identificacionResponseSchemaGemini()
+
+  return conReintento(
+    modelos,
+    async (modelo) => {
+      const { texto } = await llamarGemini({ apiKey, modelo, prompt, foto: input.foto, responseSchema })
+      return parsearIdentificacion(texto)
+    },
+    'No se ha podido identificar la planta. Vuelve a intentarlo.',
+  )
 }
 
 export const aiService: AiService = {
@@ -101,14 +175,6 @@ export const aiService: AiService = {
     return Boolean(ajustesCache?.apiKey?.trim())
   },
   analyze: analizar,
-
-  // MARCADORES: los sustituye el agente de IA con prompt y esquema reales.
-  // La firma ya está congelada en `AiService`, así que la interfaz puede
-  // programarse contra ellas sin esperar a este servicio.
-  async generarGuia() {
-    throw new AiError('La guía de cuidados todavía no está disponible', 'desconocido')
-  },
-  async identificar() {
-    throw new AiError('La identificación todavía no está disponible', 'desconocido')
-  },
+  generarGuia,
+  identificar,
 }

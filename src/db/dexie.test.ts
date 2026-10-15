@@ -1,7 +1,9 @@
 import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import Dexie from 'dexie'
 import type { Db } from '@/services/contracts'
-import type { AiAnalysisDraft } from '@/types'
+import type { AiAnalysisDraft, GuiaCuidadosDraft } from '@/types'
+import { SETTINGS_POR_DEFECTO } from '@/types'
 import { createIndexedDb } from './dexie'
 
 /**
@@ -28,9 +30,18 @@ function esperar(ms: number): Promise<void> {
 
 /** Cada test usa su propia base para que no se pisen entre ellos. */
 let contador = 0
-function nuevaDb(): Db {
+function nombreDePrueba(): string {
   contador += 1
-  return createIndexedDb(`plantapps-test-${contador}`)
+  return `plantapps-test-${contador}`
+}
+function nuevaDb(): Db {
+  return createIndexedDb(nombreDePrueba())
+}
+
+/** Base nueva con su nombre a la vista, para poder mirarla en crudo después. */
+function nuevaDbConNombre(): { db: Db; nombre: string } {
+  const nombre = nombreDePrueba()
+  return { db: createIndexedDb(nombre), nombre }
 }
 
 /** Foto falsa: bytes reconocibles para poder compararlos después. */
@@ -52,6 +63,71 @@ const borradorAnalisis: AiAnalysisDraft = {
   recomendaciones: ['mover a media sombra'],
   confianza: 'media',
   resumen: 'La planta va bien pero le falta agua.',
+}
+
+/** Guía de ejemplo, tal y como la devuelve el modelo. */
+const borradorGuia: GuiaCuidadosDraft = {
+  nombreComun: 'Monstera',
+  nombreCientifico: 'Monstera deliciosa',
+  familia: 'Araceae',
+  resumen: 'Trepa y aguanta la falta de agua mejor de lo que parece.',
+  secciones: [
+    { titulo: 'Riego', contenido: 'Deja que se sequen los primeros centímetros.' },
+    { titulo: 'Luz', contenido: 'Media sombra.', puntos: ['Le va bien la luz filtrada'] },
+  ],
+  frecuenciaRiegoDias: 7,
+  dificultad: 'facil',
+  basadaEnContexto: true,
+}
+
+/** Guías en miniatura, para no repetir el borrador entero en cada prueba. */
+function guiaDe(plantId: string, resumen: string) {
+  return { ...borradorGuia, plantId, modelo: 'gemini-3.6-flash', resumen }
+}
+
+/**
+ * Abre la base con IndexedDB directamente, sin Dexie, y devuelve el resultado de
+ * una consulta de solo lectura. Sirve para mirar lo que hay DE VERDADO en la
+ * tabla `guides`, que es lo que demuestra que no es un mapa en memoria.
+ */
+function leerEnCrudo<T>(nombreBd: string, leer: (bd: IDBDatabase) => IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const peticion = indexedDB.open(nombreBd)
+    peticion.onerror = () => reject(peticion.error)
+    peticion.onsuccess = () => {
+      const bd = peticion.result
+      const consulta = leer(bd)
+      consulta.onsuccess = () => {
+        bd.close()
+        resolve(consulta.result)
+      }
+      consulta.onerror = () => {
+        bd.close()
+        reject(consulta.error)
+      }
+    }
+  })
+}
+
+/** Cuántas filas de guía hay de verdad para esa planta. */
+function filasDeGuia(nombreBd: string, plantId: string): Promise<number> {
+  return leerEnCrudo(nombreBd, (bd) =>
+    bd.transaction('guides', 'readonly').objectStore('guides').index('plantId').count(plantId),
+  )
+}
+
+/** Si ese almacén existe de verdad en la base de datos. */
+function existeAlmacen(nombreBd: string, almacen: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const peticion = indexedDB.open(nombreBd)
+    peticion.onerror = () => reject(peticion.error)
+    peticion.onsuccess = () => {
+      const bd = peticion.result
+      const hay = bd.objectStoreNames.contains(almacen)
+      bd.close()
+      resolve(hay)
+    }
+  })
 }
 
 describe('Db con Dexie/IndexedDB (cumplimiento del contrato)', () => {
@@ -339,6 +415,7 @@ describe('Db con Dexie/IndexedDB (cumplimiento del contrato)', () => {
     await db.events.create({ plantId: plant.id, tipo: 'riego', fecha: haceDias(1) })
     const foto = await db.photos.put(fotoFalsa())
     await db.analyses.create({ ...borradorAnalisis, plantId: plant.id, photoId: foto.id, modelo: 'gemini' })
+    await db.guides.create(guiaDe(plant.id, 'Antes de borrar todo.'))
     await db.settings.save({ apiKey: 'abc' })
 
     await db.clear()
@@ -347,6 +424,271 @@ describe('Db con Dexie/IndexedDB (cumplimiento del contrato)', () => {
     expect(await db.events.listRecent()).toHaveLength(0)
     expect(await db.analyses.listByPlant(plant.id)).toHaveLength(0)
     expect(await db.photos.get(foto.id)).toBeUndefined()
+    expect(await db.guides.get(plant.id)).toBeUndefined()
     expect((await db.settings.get()).apiKey).toBeUndefined()
+  })
+})
+
+describe('Tabla guides (persistencia real)', () => {
+  it('guarda la guía de una planta y la devuelve íntegra', async () => {
+    const { db, nombre } = nuevaDbConNombre()
+    const plant = await db.plants.create({ nombre: 'Monstera del salón' })
+
+    expect(await db.guides.get(plant.id)).toBeUndefined()
+
+    const guardada = await db.guides.create(guiaDe(plant.id, 'La planta del salón.'))
+
+    expect(guardada.id).toBeTruthy()
+    expect(guardada.plantId).toBe(plant.id)
+    expect(guardada.modelo).toBe('gemini-3.6-flash')
+    expect(Date.parse(guardada.generadoEn)).toBeGreaterThan(0)
+    expect(guardada.secciones).toHaveLength(2)
+    expect(guardada.secciones[1]?.puntos).toEqual(['Le va bien la luz filtrada'])
+
+    // Está en la tabla, no en un mapa en memoria.
+    expect(await filasDeGuia(nombre, plant.id)).toBe(1)
+    const leida = await db.guides.get(plant.id)
+    expect(leida).toEqual(guardada)
+  })
+
+  it('sustituye la guía anterior cuando se vuelve a generar', async () => {
+    const { db, nombre } = nuevaDbConNombre()
+    const plant = await db.plants.create({ nombre: 'Dracena' })
+
+    const primera = await db.guides.create(guiaDe(plant.id, 'La primera.'))
+    await esperar(5)
+    const segunda = await db.guides.create(guiaDe(plant.id, 'La segunda.'))
+
+    expect(segunda.id).not.toBe(primera.id)
+    expect(segunda.resumen).toBe('La segunda.')
+    expect(Date.parse(segunda.generadoEn)).toBeGreaterThan(Date.parse(primera.generadoEn))
+
+    // Una planta, una sola guía vigente: la anterior desaparece de la tabla.
+    expect(await filasDeGuia(nombre, plant.id)).toBe(1)
+    const vigente = await db.guides.get(plant.id)
+    expect(vigente?.id).toBe(segunda.id)
+    expect(vigente?.resumen).toBe('La segunda.')
+  })
+
+  it('mantiene la guía de cada planta separada', async () => {
+    const { db, nombre } = nuevaDbConNombre()
+    const monstera = await db.plants.create({ nombre: 'Monstera' })
+    const cactus = await db.plants.create({ nombre: 'Cactus' })
+
+    await db.guides.create(guiaDe(monstera.id, 'Guía de la monstera.'))
+    await db.guides.create(guiaDe(cactus.id, 'Guía del cactus.'))
+
+    expect((await db.guides.get(monstera.id))?.resumen).toBe('Guía de la monstera.')
+    expect((await db.guides.get(cactus.id))?.resumen).toBe('Guía del cactus.')
+    expect(await filasDeGuia(nombre, monstera.id)).toBe(1)
+    expect(await filasDeGuia(nombre, cactus.id)).toBe(1)
+  })
+
+  it('borra la guía de una planta y no falla si no tenía ninguna', async () => {
+    const { db, nombre } = nuevaDbConNombre()
+    const conGuia = await db.plants.create({ nombre: 'Con guía' })
+    const sinGuia = await db.plants.create({ nombre: 'Sin guía' })
+    await db.guides.create(guiaDe(conGuia.id, 'Se borra.'))
+
+    await db.guides.remove(conGuia.id)
+    expect(await db.guides.get(conGuia.id)).toBeUndefined()
+    expect(await filasDeGuia(nombre, conGuia.id)).toBe(0)
+
+    await expect(db.guides.remove(sinGuia.id)).resolves.toBeUndefined()
+  })
+
+  it('la guía sobrevive a cerrar y reabrir la base de datos', async () => {
+    const { db, nombre } = nuevaDbConNombre()
+    const plant = await db.plants.create({ nombre: 'Kalanchoe' })
+    const guardada = await db.guides.create(guiaDe(plant.id, 'Sobrevive a la recarga.'))
+
+    // Una conexión nueva al mismo almacenamiento: es lo que pasa al recargar.
+    const otra = createIndexedDb(nombre)
+    const trasRecargar = await otra.guides.get(plant.id)
+
+    expect(trasRecargar).toEqual(guardada)
+    expect((await otra.plants.get(plant.id))?.nombre).toBe('Kalanchoe')
+  })
+
+  it('borra en cascada la guía al borrar la planta', async () => {
+    const { db, nombre } = nuevaDbConNombre()
+    const seVa = await db.plants.create({ nombre: 'Se va' })
+    const seQueda = await db.plants.create({ nombre: 'Se queda' })
+    await db.guides.create(guiaDe(seVa.id, 'Tiene que desaparecer.'))
+    await db.guides.create(guiaDe(seQueda.id, 'Esta se queda.'))
+
+    await db.plants.remove(seVa.id)
+
+    expect(await db.guides.get(seVa.id)).toBeUndefined()
+    expect(await filasDeGuia(nombre, seVa.id)).toBe(0)
+    // La cascada no toca lo que pertenece a otras plantas.
+    expect((await db.guides.get(seQueda.id))?.resumen).toBe('Esta se queda.')
+    expect(await filasDeGuia(nombre, seQueda.id)).toBe(1)
+  })
+
+  it('cada escritura en guides sube la versión y avisa a los suscriptores', async () => {
+    const db = nuevaDb()
+    const plant = await db.plants.create({ nombre: 'Ficus' })
+    let avisos = 0
+    const parar = db.subscribe(() => avisos++)
+    const versionInicial = db.version
+
+    await db.guides.create(guiaDe(plant.id, 'Una.'))
+    expect(avisos).toBe(1)
+    expect(db.version).toBe(versionInicial + 1)
+
+    await db.guides.create(guiaDe(plant.id, 'Dos.'))
+    expect(avisos).toBe(2)
+    expect(db.version).toBe(versionInicial + 2)
+
+    await db.guides.remove(plant.id)
+    expect(avisos).toBe(3)
+    expect(db.version).toBe(versionInicial + 3)
+
+    parar()
+    await db.guides.create(guiaDe(plant.id, 'Tres.'))
+    expect(avisos).toBe(3)
+    expect(db.version).toBe(versionInicial + 4)
+  })
+})
+
+describe('Migración de la base de la versión 1 a la versión 2', () => {
+  /**
+   * Esquema exacto de la versión 1, el que se publicó. Va escrito aquí a
+   * propósito, sin importar el de `dexie.ts`: el test tiene que ser un testigo
+   * independiente de cómo era la base de un usuario que ya tenía datos.
+   */
+  const ESQUEMA_V1 = {
+    plants: 'id, nombre, archivada',
+    events: 'id, plantId, fecha, [plantId+fecha]',
+    photos: 'id',
+    analyses: 'id, plantId, fecha, [plantId+fecha]',
+    settings: 'clave',
+  }
+
+  /** Rellena una base con la versión 1: planta, historial, análisis, foto y ajustes. */
+  async function baseVivaEnV1(nombreBd: string) {
+    const v1 = new Dexie(nombreBd)
+    v1.version(1).stores(ESQUEMA_V1)
+    await v1.open()
+
+    const blob = fotoFalsa([4, 5, 6])
+    await v1.table('plants').put({
+      id: 'planta-v1',
+      nombre: 'Ficus de la abuela',
+      especie: 'Ficus elastica',
+      archivada: false,
+      frecuenciaRiegoDias: 9,
+      creadoEn: '2026-01-05T10:00:00.000Z',
+      actualizadoEn: '2026-01-05T10:00:00.000Z',
+    })
+    await v1.table('events').put({
+      id: 'evento-v1',
+      plantId: 'planta-v1',
+      tipo: 'riego',
+      fecha: '2026-02-11T12:00:00.000Z',
+      cantidad: '300 ml',
+      creadoEn: '2026-02-11T12:00:00.000Z',
+    })
+    await v1.table('events').put({
+      id: 'comentario-v1',
+      plantId: 'planta-v1',
+      tipo: 'comentario',
+      fecha: '2026-02-20T18:00:00.000Z',
+      nota: 'Hojas amarillas',
+      creadoEn: '2026-02-20T18:00:00.000Z',
+    })
+    await v1.table('photos').put({
+      id: 'foto-v1',
+      blob,
+      thumb: blob,
+      mime: 'image/jpeg',
+      width: 800,
+      height: 600,
+      bytes: 3,
+      creadoEn: '2026-01-05T10:00:00.000Z',
+    })
+    await v1.table('analyses').put({
+      id: 'analisis-v1',
+      plantId: 'planta-v1',
+      photoId: 'foto-v1',
+      fecha: '2026-03-01T09:00:00.000Z',
+      modelo: 'gemini-3.6-flash',
+      veredicto: 'regar',
+      salud: 65,
+      accionPrincipal: 'Regar esta semana',
+      regar: true,
+      frecuenciaRiegoDias: 9,
+      sintomas: ['hojas amarillas'],
+      recomendaciones: ['mover a media sombra'],
+      confianza: 'alta',
+      resumen: 'La planta va bien pero le falta agua.',
+    })
+    await v1.table('settings').put({ clave: 'app', valor: { ...SETTINGS_POR_DEFECTO, apiKey: 'clave-del-movil' } })
+
+    v1.close()
+  }
+
+  it('conserva todos los datos y añade la tabla guides vacía', async () => {
+    const nombre = nombreDePrueba()
+    await baseVivaEnV1(nombre)
+
+    // Antes de migrar, la tabla de guías no existe en el almacenamiento.
+    expect(await existeAlmacen(nombre, 'guides')).toBe(false)
+
+    // La abre la app con el esquema de la versión 2: eso dispara la migración.
+    const db = createIndexedDb(nombre)
+
+    const planta = await db.plants.get('planta-v1')
+    expect(planta?.nombre).toBe('Ficus de la abuela')
+    expect(planta?.especie).toBe('Ficus elastica')
+    expect(planta?.frecuenciaRiegoDias).toBe(9)
+    expect(planta?.archivada).toBe(false)
+    expect(planta?.creadoEn).toBe('2026-01-05T10:00:00.000Z')
+    expect(await db.plants.list({ incluirArchivadas: true })).toHaveLength(1)
+
+    const eventos = await db.events.listByPlant('planta-v1')
+    expect(eventos.map((e) => e.id)).toEqual(['comentario-v1', 'evento-v1'])
+    expect(eventos[1]?.cantidad).toBe('300 ml')
+    expect((await db.events.ultimoRiego('planta-v1'))?.id).toBe('evento-v1')
+
+    const analisis = await db.analyses.listByPlant('planta-v1')
+    expect(analisis).toHaveLength(1)
+    expect(analisis[0]?.id).toBe('analisis-v1')
+    expect(analisis[0]?.confianza).toBe('alta')
+    expect((await db.analyses.ultimo('planta-v1'))?.accionPrincipal).toBe('Regar esta semana')
+
+    const foto = await db.photos.get('foto-v1')
+    expect(foto?.mime).toBe('image/jpeg')
+    expect(foto?.width).toBe(800)
+    expect(await bytesDe(foto?.blob ?? new Blob())).toEqual([4, 5, 6])
+
+    expect((await db.settings.get()).apiKey).toBe('clave-del-movil')
+
+    // La tabla nueva existe de verdad y arranca vacía.
+    expect(await existeAlmacen(nombre, 'guides')).toBe(true)
+    expect(await db.guides.get('planta-v1')).toBeUndefined()
+    expect(await filasDeGuia(nombre, 'planta-v1')).toBe(0)
+
+    // Y la planta migrada ya puede usar la tabla nueva.
+    const guia = await db.guides.create(guiaDe('planta-v1', 'Guía pedida después de migrar.'))
+    expect(guia.id).toBeTruthy()
+    expect(await filasDeGuia(nombre, 'planta-v1')).toBe(1)
+    expect((await db.guides.get('planta-v1'))?.id).toBe(guia.id)
+  })
+
+  it('no rompe una base que ya estaba en la versión 2', async () => {
+    const nombre = nombreDePrueba()
+    await baseVivaEnV1(nombre)
+
+    const db = createIndexedDb(nombre)
+    await db.plants.list({ incluirArchivadas: true })
+    await db.guides.create(guiaDe('planta-v1', 'Primera vez.'))
+
+    // Abrirla otra vez no toca nada.
+    const otra = createIndexedDb(nombre)
+    expect((await otra.plants.get('planta-v1'))?.nombre).toBe('Ficus de la abuela')
+    expect((await otra.guides.get('planta-v1'))?.resumen).toBe('Primera vez.')
+    expect(await filasDeGuia(nombre, 'planta-v1')).toBe(1)
   })
 })

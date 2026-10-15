@@ -204,15 +204,26 @@ export function desenvolverJson(texto: string): string {
   return inicio !== -1 && fin > inicio ? cuerpo.slice(inicio, fin + 1) : cuerpo
 }
 
-const errorRespuestaInvalida = () =>
-  new AiError('La respuesta de la IA no se ha podido interpretar', 'respuesta_invalida')
+/**
+ * El mismo `AiError` para las tres funciones de la capa (`analyze`, la guía y la
+ * identificación): el mensaje vale para todas.
+ */
+export function errorDeRespuestaInvalida(): AiError {
+  return new AiError('La respuesta de la IA no se ha podido interpretar', 'respuesta_invalida')
+}
+
+/** `true` si el valor es un objeto plano: así se puede leer sin castear a `any`. */
+function esRegistro(valor: unknown): valor is Record<string, unknown> {
+  return typeof valor === 'object' && valor !== null && !Array.isArray(valor)
+}
 
 /**
- * Convierte lo que devuelve el modelo en un `AiAnalysisDraft` validado.
- * Acepta el texto de la respuesta o el objeto ya parseado.
- * Lanza `AiError('respuesta_invalida')` si no encaja con el esquema.
+ * Paso 1 común a todos los `parsearX`: convierte lo que devuelve el modelo en un
+ * objeto plano. Acepta el texto de la respuesta (envuelto en ```json o con texto
+ * alrededor) o el objeto ya parseado.
+ * Lanza `AiError('respuesta_invalida')` si no hay un objeto detrás.
  */
-export function parsearAnalisis(textoDesconocido: unknown): AiAnalysisDraft {
+export function leerObjetoJson(textoDesconocido: unknown): Record<string, unknown> {
   let datos: unknown = textoDesconocido
 
   if (typeof textoDesconocido === 'string') {
@@ -220,17 +231,24 @@ export function parsearAnalisis(textoDesconocido: unknown): AiAnalysisDraft {
     try {
       datos = JSON.parse(json)
     } catch {
-      throw errorRespuestaInvalida()
+      throw errorDeRespuestaInvalida()
     }
   }
 
-  if (typeof datos !== 'object' || datos === null || Array.isArray(datos)) {
-    throw errorRespuestaInvalida()
-  }
+  if (!esRegistro(datos)) throw errorDeRespuestaInvalida()
 
-  const resultado = ESQUEMA_ANALISIS.safeParse(normalizar(datos as Record<string, unknown>))
+  return datos
+}
 
-  if (!resultado.success) throw errorRespuestaInvalida()
+/**
+ * Convierte lo que devuelve el modelo en un `AiAnalysisDraft` validado.
+ * Acepta el texto de la respuesta o el objeto ya parseado.
+ * Lanza `AiError('respuesta_invalida')` si no encaja con el esquema.
+ */
+export function parsearAnalisis(textoDesconocido: unknown): AiAnalysisDraft {
+  const resultado = ESQUEMA_ANALISIS.safeParse(normalizar(leerObjetoJson(textoDesconocido)))
+
+  if (!resultado.success) throw errorDeRespuestaInvalida()
 
   return resultado.data
 }

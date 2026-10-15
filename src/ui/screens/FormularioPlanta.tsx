@@ -13,7 +13,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useDb, usePlant } from '@/db/context'
 import { guardarFoto, pickPhoto } from '@/services/photos'
 import { frecuenciaSugerida } from '@/services/reminders'
-import { formatDateEs, relativeEs, toDateInputValue } from '@/lib/dates'
+import { formatDateEs, fromDateInputValue, relativeEs, toDateInputValue } from '@/lib/dates'
 import {
   Button,
   Card,
@@ -29,10 +29,22 @@ import {
 } from '@/ui/components'
 import { Cabecera, Pantalla, TituloSeccion } from '@/ui/screens/Comunes'
 import { OPCIONES_LUZ, OPCION_VACIA, aLuz, numeroOpcional, textoOpcional } from '@/ui/screens/datos'
-import type { NewPlant } from '@/types'
+import type { CareEvent, NewPlant } from '@/types'
 
 /** Texto del error del nombre, en una sola frase. */
 const ERROR_NOMBRE = 'Ponle un nombre a la planta para reconocerla.'
+
+/**
+ * Nota con la que el formulario marca el riego que él mismo crea o actualiza.
+ * Sirve para reconocerlo después y no duplicarlo: los riegos que registra el
+ * usuario desde la ficha de la planta no llevan esta nota y no se tocan.
+ */
+const NOTA_RIEGO_ALTA = 'Riego registrado al dar de alta la planta'
+
+/** El riego que este formulario dejó puesto para una planta, si lo hay. */
+function riegoDelFormulario(eventos: CareEvent[]): CareEvent | undefined {
+  return eventos.find((evento) => evento.tipo === 'riego' && evento.nota === NOTA_RIEGO_ALTA)
+}
 
 export function FormularioPlanta() {
   const { id } = useParams<{ id: string }>()
@@ -46,6 +58,7 @@ export function FormularioPlanta() {
   const [nombre, setNombre] = useState('')
   const [especie, setEspecie] = useState('')
   const [fecha, setFecha] = useState('')
+  const [ultimoRiego, setUltimoRiego] = useState('')
   const [frecuencia, setFrecuencia] = useState('')
   const [maceta, setMaceta] = useState('')
   const [ubicacion, setUbicacion] = useState('')
@@ -83,6 +96,10 @@ export function FormularioPlanta() {
       fotoRef.current = p.fotoPortadaId
       setInicializado(true)
     })
+    // El campo «Último riego» no está en la planta: sale de su historial.
+    void db.events.listByPlant(plantaId).then((eventos) => {
+      setUltimoRiego(toDateInputValue(riegoDelFormulario(eventos)?.fecha))
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plantaId])
 
@@ -103,6 +120,39 @@ export function FormularioPlanta() {
     } catch (problema) {
       setError(problema instanceof Error ? problema.message : 'No se ha podido cargar la foto.')
     }
+  }
+
+  /**
+   * Deja el «Último riego» como un evento del historial, no como un dato de la
+   * planta. Si la planta ya tiene un riego puesto por este formulario, se
+   * actualiza ese mismo evento (cambiar la fecha no lo duplica) y si la fecha se
+   * deja vacía, se quita; si no hay ninguno, se crea. Los riegos que registró el
+   * usuario desde la ficha de la planta no se tocan nunca.
+   */
+  const sincronizarRiego = async (plantaAEditar: string, fechaEscrita: string) => {
+    const eventos = await db.events.listByPlant(plantaAEditar)
+    const previo = riegoDelFormulario(eventos)
+
+    if (previo === undefined) {
+      if (fechaEscrita !== '') {
+        await db.events.create({
+          plantId: plantaAEditar,
+          tipo: 'riego',
+          fecha: fromDateInputValue(fechaEscrita),
+          nota: NOTA_RIEGO_ALTA,
+        })
+      }
+      return
+    }
+
+    if (fechaEscrita === '') {
+      await db.events.remove(previo.id)
+      return
+    }
+
+    const fechaNueva = fromDateInputValue(fechaEscrita)
+    if (previo.fecha === fechaNueva) return
+    await db.events.update(previo.id, { fecha: fechaNueva, nota: NOTA_RIEGO_ALTA })
   }
 
   const guardar = async () => {
@@ -134,6 +184,13 @@ export function FormularioPlanta() {
 
       if (fotoRef.current && fotoRef.current !== guardada.fotoPortadaId) {
         await db.plants.setFotoPortada(guardada.id, fotoRef.current)
+      }
+
+      // En alta la planta aún no existía, así que el riego se crea con su id ya
+      // asignado; en edición se reutiliza el que hubiera puesto el formulario.
+      // Sin fecha y sin riego previo no hay nada que hacer.
+      if (ultimoRiego !== '' || editando) {
+        await sincronizarRiego(editando && plantaId ? plantaId : guardada.id, ultimoRiego)
       }
 
       navegar(-1)
@@ -243,6 +300,13 @@ export function FormularioPlanta() {
 
         <Field label="Fecha de plantado" hint="Si la pones, la app avisa del tiempo que lleva fuera de su maceta.">
           <DateInput value={fecha} onChange={(e) => setFecha(e.target.value)} />
+        </Field>
+
+        <Field
+          label="Último riego"
+          hint="Opcional. La app lo guarda como un riego más del historial, no como un dato de la planta."
+        >
+          <DateInput value={ultimoRiego} onChange={(e) => setUltimoRiego(e.target.value)} />
         </Field>
 
         <Field

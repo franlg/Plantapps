@@ -9,18 +9,18 @@ function esVacio(valor: string | number | null | undefined): boolean {
 }
 
 /** `- Etiqueta: valor`, o "sin datos" si no hay nada. */
-function dato(etiqueta: string, valor: string | number | null | undefined): string {
+export function dato(etiqueta: string, valor: string | number | null | undefined): string {
   return `- ${etiqueta}: ${esVacio(valor) ? 'sin datos' : valor}`
 }
 
 /** Traduce el código de luz a algo legible; si ya viene en texto, lo respeta. */
-function luzEnEspañol(luz: string | undefined): string {
+export function luzEnEspañol(luz: string | undefined): string {
   if (!luz) return 'sin datos'
   return (LUZ_LABELS as Record<string, string>)[luz] ?? luz
 }
 
 /** Fecha en texto: 'hace 5 días' ya lo resuelve la app, aquí solo va la fecha. */
-function fecha(iso: string | null): string {
+export function fecha(iso: string | null): string {
   return iso ? new Date(iso).toLocaleDateString('es-ES') : 'nunca'
 }
 

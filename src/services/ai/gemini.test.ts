@@ -90,6 +90,46 @@ describe('llamarGemini', () => {
     expect(await blobABase64(grande)).toBe(btoa('A'.repeat(70_000)))
   })
 
+  it('manda solo el prompt cuando no hay foto', async () => {
+    fetchMock.mockResolvedValue(okConTexto('{"especie":"Monstera deliciosa"}'))
+
+    const resultado = await llamarGemini({ apiKey: 'clave-secreta', modelo: 'gemini-3.6-flash', prompt: 'guía de esta planta' })
+
+    expect(resultado.texto).toBe('{"especie":"Monstera deliciosa"}')
+
+    const cuerpo = cuerpoDeLaPeticion()
+    expect(cuerpo.contents).toEqual([{ role: 'user', parts: [{ text: 'guía de esta planta' }] }])
+    expect(JSON.stringify(cuerpo)).not.toContain('inline_data')
+  })
+
+  it('acepta el esquema de respuesta que le pase quien llama', async () => {
+    fetchMock.mockResolvedValue(okConTexto('{}'))
+
+    await llamarGemini({
+      apiKey: 'k',
+      modelo: 'm',
+      prompt: 'p',
+      responseSchema: { type: 'object', properties: { especie: { type: 'string' } }, required: ['especie'] },
+    })
+
+    const config = cuerpoDeLaPeticion().generationConfig as Record<string, unknown>
+    expect(config.responseSchema).toEqual({
+      type: 'object',
+      properties: { especie: { type: 'string' } },
+      required: ['especie'],
+    })
+  })
+
+  it('avisa con otro mensaje si no hay texto y la llamada no era con foto', async () => {
+    fetchMock.mockResolvedValue(respuesta(200, { candidates: [] }))
+
+    const error = await expectAiError(
+      llamarGemini({ apiKey: 'k', modelo: 'm', prompt: 'p' }),
+      'respuesta_invalida',
+    )
+    expect(error.message).toContain('ninguna respuesta')
+  })
+
   it('concatena varios parts de texto', async () => {
     fetchMock.mockResolvedValue(
       respuesta(200, { candidates: [{ content: { parts: [{ text: '{"a":' }, { text: '1}' }] } }] }),

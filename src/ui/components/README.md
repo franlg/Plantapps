@@ -33,6 +33,7 @@ Todo se importa desde aquí: `import { Button, Card, Sheet } from '@/ui/componen
 | `SegmentedControl` | `value: T` · `options: Array<{ value: T; label: string }>` · `onChange: (v: T) => void` · `ariaLabel: string` · `className?` | `<SegmentedControl value={vista} options={[{ value: 'lista', label: 'Lista' }, { value: 'cal', label: 'Calendario' }]} onChange={setVista} ariaLabel="Vista" />` |
 | `ErrorBanner` | `title: string` · `message?: string` · `onRetry?: () => void` · `onDismiss?: () => void` | `<ErrorBanner title="No se ha podido guardar" onRetry={reintentar} />` |
 | `ConfirmDialog` | `open` · `title` · `message` · `confirmLabel` · `cancelLabel` · `onConfirm` · `onCancel` · `destructive?` | `<ConfirmDialog open={borrar} title="¿Borrar?" message="Se borra también el historial." confirmLabel="Sí, borrar" cancelLabel="Cancelar" onConfirm={borrar} onCancel={() => setBorrar(false)} destructive />` |
+| `Acordeon` | `titulo: ReactNode` · `children: ReactNode` · `contador?: ReactNode` · `abierto?: boolean` · `onToggle?: (abierto: boolean) => void` · `tono?: 'neutro'\|'ok'\|'alerta'\|'peligro'` · `etiqueta?: string` · `className?` | `<Acordeon titulo="Necesitan agua" contador={<Badge tone="alerta">3</Badge>} tono="alerta" abierto={abierto} onToggle={setAbierto}>…</Acordeon>` |
 
 ---
 
@@ -45,4 +46,5 @@ Todo se importa desde aquí: `import { Button, Card, Sheet } from '@/ui/componen
 - **DateInput** habla `YYYY-MM-DD`: usa `todayIso()` y `toIsoDate()` / `fromDateInputValue()` de `@/lib/dates`.
 - **PhotoThumb** usa `usePhotoUrl` de `@/db/context`, así que **necesita `<DbProvider>`** (ya está en `main.tsx`). El `alt` es obligatorio: describe la foto, p. ej. `Foto de la Monstera del salón`.
 - **EstadoRiegoChip / VeredictoChip** no piden texto: usan `ESTADO_REGIO_LABELS` y `VEREDICTO_LABELS` de `@/types` y eligen el color solos.
+- **Acordeon**: toda la cabecera es un `<button>` de 44 px (`.tap-target`), así que se abre con el pulgar, con Enter y con Espacio. El botón lleva `aria-expanded` + `aria-controls` y el panel es un `role="region"` etiquetado por el propio botón. Sin `abierto` se despliega solo; con `abierto` + `onToggle` manda el padre. El contenido no hace scroll propio: empuja al resto de la pantalla. `tono` tiñe la cabecera y pone la franja de color a la izquierda (`ok`, `alerta`, `peligro`, `neutro`). El chevron es un SVG inline con `aria-hidden`, y gira con `rotate-180` respetando `prefers-reduced-motion`.
 - Las clases del tema (`campo`, `superficie`, `tap-target`, `area-segura-abajo`) están en `src/ui/theme.css`; las utilidades de Tailwind mandan sobre ellas, así que `className` siempre gana.

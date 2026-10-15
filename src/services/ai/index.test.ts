@@ -61,6 +61,63 @@ const ANALISIS = {
 
 const ENTRADA = { plantId: 'p1', foto: FOTO, contexto: CONTEXTO }
 
+const SECCIONES = [
+  { titulo: 'Riego', contenido: 'Cuando la tierra se seque por arriba.' },
+  { titulo: 'Luz', contenido: 'Luz indirecta brillante.' },
+  { titulo: 'Sustrato y maceta', contenido: 'Sustrato con perlita y buen drenaje.' },
+  { titulo: 'Temperatura', contenido: 'Entre 18 y 27 °C.' },
+  { titulo: 'Fertilización', contenido: 'Cada dos meses en verano.' },
+  { titulo: 'Problemas frecuentes', contenido: 'Hojas amarillas por exceso de agua.' },
+]
+
+const GUIA = {
+  nombreComun: 'Monstera',
+  nombreCientifico: 'Monstera deliciosa',
+  familia: 'Araceae',
+  resumen: 'Planta de casa muy resistente y fácil.',
+  secciones: SECCIONES,
+  frecuenciaRiegoDias: 10,
+  dificultad: 'facil',
+  basadaEnContexto: true,
+}
+
+const ENTRADA_GUIA = {
+  plantId: 'p1',
+  contexto: {
+    nombre: 'Monstera del salón',
+    especie: 'Monstera deliciosa',
+    maceta: 'maceta de 18 cm',
+    ubicacion: 'sala, junto a la ventana',
+    luz: 'sol_indirecto',
+    diasDesdePlantado: 120,
+    ultimoRiego: '2026-10-01T10:00:00.000Z',
+  },
+}
+
+const IDENTIFICACION = {
+  especie: 'Monstera deliciosa',
+  nombreComun: 'Monstera',
+  familia: 'Araceae',
+  confianza: 'alta',
+  razon: 'Hojas grandes con lóbulos y nervaduras marcadas.',
+  alternativas: ['Philodendron scandens'],
+  frecuenciaRiegoDias: 10,
+  luz: 'sol_indirecto',
+}
+
+const SIN_IDENTIFICAR = {
+  especie: null,
+  nombreComun: null,
+  familia: null,
+  confianza: 'baja',
+  razon: 'La foto está demasiado oscura para distinguir nada.',
+  alternativas: [],
+  frecuenciaRiegoDias: null,
+  luz: null,
+}
+
+const ENTRADA_IDENTIFICAR = { plantId: 'p1', foto: FOTO, pistas: 'la tengo desde el domingo' }
+
 function respuesta(status: number, cuerpo: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -93,6 +150,18 @@ async function cargarServicio() {
 
 function urlsDeLasPeticiones(): string[] {
   return fetchMock.mock.calls.map(([url]) => url as string)
+}
+
+/** Cuerpo JSON de la petición `indice`. */
+function cuerpoDeLaPeticion(indice = 0): Record<string, unknown> {
+  const [, init] = fetchMock.mock.calls[indice] as [string, RequestInit]
+  return JSON.parse(init.body as string) as Record<string, unknown>
+}
+
+/** Los `parts` que se mandan al modelo: texto y, si la hay, la foto. */
+function partesDeLaPeticion(indice = 0): Array<Record<string, unknown>> {
+  const contents = cuerpoDeLaPeticion(indice).contents as Array<{ parts: Array<Record<string, unknown>> }>
+  return contents[0]?.parts ?? []
 }
 
 async function expectAiError(promesa: Promise<unknown>, codigo: string): Promise<AiError> {
@@ -254,6 +323,228 @@ describe('aiService.analyze', () => {
     expect(prompt).toContain('Monstera deliciosa')
     expect(prompt).toContain('13')
     expect(prompt).toContain('¿Hay que regar ahora?')
+  })
+})
+
+describe('aiService.generarGuia', () => {
+  it('devuelve el draft con las seis secciones', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(GUIA)))
+    const { aiService } = await cargarServicio()
+
+    const draft = await aiService.generarGuia(ENTRADA_GUIA)
+
+    expect(draft.nombreComun).toBe('Monstera')
+    expect(draft.secciones).toHaveLength(6)
+    expect(draft.secciones.map((s) => s.titulo)).toEqual([
+      'Riego',
+      'Luz',
+      'Sustrato y maceta',
+      'Temperatura',
+      'Fertilización',
+      'Problemas frecuentes',
+    ])
+    expect(draft.frecuenciaRiegoDias).toBe(10)
+    expect(draft.dificultad).toBe('facil')
+    expect(draft.basadaEnContexto).toBe(true)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(urlsDeLasPeticiones()[0]).toContain('models/modelo-principal:generateContent')
+  })
+
+  it('completa las secciones que falten en lugar de fallar', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify({ ...GUIA, secciones: SECCIONES.slice(0, 2) })))
+    const { aiService } = await cargarServicio()
+
+    const draft = await aiService.generarGuia(ENTRADA_GUIA)
+
+    expect(draft.secciones).toHaveLength(6)
+    expect(draft.secciones[1]?.contenido).toBe('Luz indirecta brillante.')
+    expect(draft.secciones[2]?.contenido).toBe('Consulta la ficha de esta planta para más detalle.')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('acepta el JSON envuelto en ```json', async () => {
+    fetchMock.mockResolvedValue(exito('```json\n' + JSON.stringify(GUIA) + '\n```'))
+    const { aiService } = await cargarServicio()
+
+    expect((await aiService.generarGuia(ENTRADA_GUIA)).resumen).toBe(GUIA.resumen)
+  })
+
+  it('falla con respuesta_invalida si la guía no se puede interpretar', async () => {
+    fetchMock.mockResolvedValue(exito('esto no es json'))
+    const { aiService } = await cargarServicio()
+
+    await expectAiError(aiService.generarGuia(ENTRADA_GUIA), 'respuesta_invalida')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('falla con sin_clave si no hay clave en Ajustes, sin llamar a la red', async () => {
+    mockSettingsGet.mockResolvedValue({ modelo: 'modelo-principal', modeloFallback: 'modelo-respaldo', recordatorios: AJUSTES.recordatorios })
+    const { aiService } = await cargarServicio()
+
+    await expectAiError(aiService.generarGuia(ENTRADA_GUIA), 'sin_clave')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('reintenta con el respaldo si se agota la cuota', async () => {
+    fetchMock.mockResolvedValueOnce(fallo(429, 'Quota exceeded')).mockResolvedValueOnce(exito(JSON.stringify(GUIA)))
+    const { aiService } = await cargarServicio()
+
+    expect((await aiService.generarGuia(ENTRADA_GUIA)).nombreComun).toBe('Monstera')
+    expect(urlsDeLasPeticiones()[1]).toContain('models/modelo-respaldo:generateContent')
+  })
+
+  it('reintenta con el respaldo si el modelo principal no existe', async () => {
+    fetchMock
+      .mockResolvedValueOnce(fallo(404, 'models/modelo-principal is not found for API version v1beta'))
+      .mockResolvedValueOnce(exito(JSON.stringify(GUIA)))
+
+    const { aiService } = await cargarServicio()
+
+    await aiService.generarGuia(ENTRADA_GUIA)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(urlsDeLasPeticiones()[0]).toContain('models/modelo-principal:generateContent')
+    expect(urlsDeLasPeticiones()[1]).toContain('models/modelo-respaldo:generateContent')
+  })
+
+  it('nunca hace más de 2 peticiones aunque los dos modelos fallen', async () => {
+    fetchMock.mockResolvedValue(fallo(429, 'Quota exceeded'))
+    const { aiService } = await cargarServicio()
+
+    await expectAiError(aiService.generarGuia(ENTRADA_GUIA), 'cuota')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('manda solo texto si no hay foto, y el esquema de la guía', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(GUIA)))
+    const { aiService } = await cargarServicio()
+
+    await aiService.generarGuia(ENTRADA_GUIA)
+
+    const cuerpo = cuerpoDeLaPeticion()
+    expect(cuerpo.contents).toEqual([{ role: 'user', parts: [{ text: expect.stringContaining('Monstera del salón') }] }])
+    expect(cuerpo.generationConfig).toMatchObject({
+      responseMimeType: 'application/json',
+      responseSchema: { required: expect.arrayContaining(['secciones']) },
+    })
+  })
+
+  it('manda la foto cuando la hay y el prompt con los datos de la planta', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(GUIA)))
+    const { aiService } = await cargarServicio()
+
+    await aiService.generarGuia({ ...ENTRADA_GUIA, foto: FOTO })
+
+    const partes = partesDeLaPeticion()
+    expect(partes.some((parte) => 'inline_data' in parte)).toBe(true)
+    expect(partes[0]?.text).toContain('Monstera del salón')
+    expect(partes[0]?.text).toContain('maceta de 18 cm')
+    expect(partes[0]?.text).toContain('Problemas frecuentes')
+  })
+})
+
+describe('aiService.identificar', () => {
+  it('devuelve la especie y los datos para rellenar la ficha', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(IDENTIFICACION)))
+    const { aiService } = await cargarServicio()
+
+    const draft = await aiService.identificar(ENTRADA_IDENTIFICAR)
+
+    expect(draft.especie).toBe('Monstera deliciosa')
+    expect(draft.nombreComun).toBe('Monstera')
+    expect(draft.familia).toBe('Araceae')
+    expect(draft.confianza).toBe('alta')
+    expect(draft.alternativas).toEqual(['Philodendron scandens'])
+    expect(draft.frecuenciaRiegoDias).toBe(10)
+    expect(draft.luz).toBe('sol_indirecto')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(urlsDeLasPeticiones()[0]).toContain('models/modelo-principal:generateContent')
+  })
+
+  it('devuelve especie null sin lanzar cuando la foto no deja decidir', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(SIN_IDENTIFICAR)))
+    const { aiService } = await cargarServicio()
+
+    const draft = await aiService.identificar(ENTRADA_IDENTIFICAR)
+
+    expect(draft.especie).toBeNull()
+    expect(draft.confianza).toBe('baja')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('acepta una foto mala con confianza baja y algo de luz y riego', async () => {
+    fetchMock.mockResolvedValue(
+      exito(
+        JSON.stringify({
+          ...SIN_IDENTIFICAR,
+          especie: 'Ficus lyrata',
+          confianza: 'baja',
+          razon: 'Se intuye la hoja de higuera pero la foto está borrosa.',
+          luz: 'Sol directo',
+          frecuenciaRiegoDias: 14,
+        }),
+      ),
+    )
+    const { aiService } = await cargarServicio()
+
+    const draft = await aiService.identificar(ENTRADA_IDENTIFICAR)
+
+    expect(draft.especie).toBe('Ficus lyrata')
+    expect(draft.confianza).toBe('baja')
+    expect(draft.luz).toBe('sol_directo')
+    expect(draft.frecuenciaRiegoDias).toBe(14)
+  })
+
+  it('reintenta con el respaldo si el modelo principal no existe', async () => {
+    fetchMock
+      .mockResolvedValueOnce(fallo(404, 'models/modelo-principal is not found for API version v1beta'))
+      .mockResolvedValueOnce(exito(JSON.stringify(IDENTIFICACION)))
+
+    const { aiService } = await cargarServicio()
+
+    expect((await aiService.identificar(ENTRADA_IDENTIFICAR)).especie).toBe('Monstera deliciosa')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(urlsDeLasPeticiones()[1]).toContain('models/modelo-respaldo:generateContent')
+  })
+
+  it('nunca hace más de 2 peticiones y propaga el último error', async () => {
+    fetchMock.mockResolvedValue(fallo(429, 'Quota exceeded'))
+    const { aiService } = await cargarServicio()
+
+    await expectAiError(aiService.identificar(ENTRADA_IDENTIFICAR), 'cuota')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('falla con sin_clave si no hay clave en Ajustes, sin llamar a la red', async () => {
+    mockSettingsGet.mockResolvedValue({ ...AJUSTES, apiKey: '   ' })
+    const { aiService } = await cargarServicio()
+
+    await expectAiError(aiService.identificar(ENTRADA_IDENTIFICAR), 'sin_clave')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('falla con respuesta_invalida si la respuesta no es un objeto', async () => {
+    fetchMock.mockResolvedValue(exito('es una monstera, seguro'))
+    const { aiService } = await cargarServicio()
+
+    await expectAiError(aiService.identificar(ENTRADA_IDENTIFICAR), 'respuesta_invalida')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('manda la foto, las pistas y el esquema de identificación', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(IDENTIFICACION)))
+    const { aiService } = await cargarServicio()
+
+    await aiService.identificar(ENTRADA_IDENTIFICAR)
+
+    const partes = partesDeLaPeticion()
+    expect(partes.some((parte) => 'inline_data' in parte)).toBe(true)
+    expect(partes[0]?.text).toContain('la tengo desde el domingo')
+
+    const config = cuerpoDeLaPeticion().generationConfig as { responseSchema: { properties: Record<string, unknown> } }
+    expect(Object.keys(config.responseSchema.properties)).toContain('especie')
+    expect(Object.keys(config.responseSchema.properties)).toContain('luz')
   })
 })
 
