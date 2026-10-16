@@ -101,9 +101,24 @@ public/
 
 ### Publicación
 - El `base` de Vite **debe** coincidir con el nombre del repo, **incluida la capitalización**:
-  el repo es `Plantapps`, así que `base: '/Plantapps/'`.
+  el repo es `Plantapps`, así que `base: '/Plantapps/'`. Con minúsculas sale un 404 en blanco.
 - El service worker **nunca** intercepta peticiones a `generativelanguage.googleapis.com`.
 - Cada `git push` a `main` dispara el workflow: compila, pasa tests y publica.
+
+## Acceso a GitHub: por SSH, no por token
+
+El remoto es `git@github.com:franlg/Plantapps.git`. **No uses tokens de GitHub**: el acceso va por
+una clave SSH ed25519 en `~/.ssh/id_ed25519_github`, declarada en `~/.ssh/config` para `github.com`.
+
+- **Nunca** escribas un token en el remoto (`https://usuario:token@github.com/...`): se queda en
+  texto plano dentro de `.git/config` y en el historial de cualquier chat.
+- **Nunca** compartas ni muestres la clave **privada**. La pública (`.pub`) sí se puede compartir.
+- Comprobar que funciona: `ssh -T git@github.com` → debe salir
+  `Hi franlg! You've successfully authenticated` (sale con código 1 aunque funcione: es el modo de
+  GitHub para decir "autenticado pero sin shell").
+- Para consultar el estado de los despliegues **no hace falta token**: el repo es público y la API
+  sin autenticar sirve para leer runs (`/repos/franlg/Plantapps/actions/runs`). Límite: 60 peticiones
+  por hora y por IP.
 
 ## Cómo publicar cambios
 
