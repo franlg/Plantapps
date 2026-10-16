@@ -233,14 +233,39 @@ export function createIndexedDb(nombreBd: string = NOMBRE_POR_DEFECTO): Db {
     async get(id) {
       return fotosT.get(id)
     },
-    // MARCADOR: `byIds` en Dexie lo implementa el agente de datos.
+    /**
+     * Recupera muchas fotos de una sola vez: es lo que pide la galería de
+     * progreso, que tiene N análisis y no quiere N viajes a la base.
+     *
+     * Se usa `fotosT.bulkGet(...)` y no `fotosT.where('id').anyOf(...)` por tres
+     * motivos:
+     *
+     *  1. **Devuelve el mismo orden que la implementación en memoria.**
+     *     `bulkGet` coloca cada foto en la posición de su clave del array
+     *     pedido, así que la galería sale en el orden de los análisis de los que
+     *     sale. `anyOf` ordena el conjunto de claves internamente y recorre el
+     *     índice de menor a mayor: devolvería las fotos por id, no por
+     *     antigüedad, y habría que reordenarlas después a mano.
+     *  2. **Una sola transacción de lectura, con `ids.length` búsquedas.**
+     *     Las dos abren una transacción (frente a las N del bucle de `get` que
+     *     había aquí), pero `bulkGet` apunta a cada foto por su clave primaria.
+     *     `anyOf`, en cambio, abre un cursor sobre TODO el rango que va de la
+     *     clave más pequeña a la más grande del conjunto: como los ids son
+     *     aleatorios, con 200 fotos eso significa barrer casi toda la tabla y
+     *     comparar fila por fila.
+     *  3. **Lo que no existe vuelve como `undefined`**, así que "si no está, se
+     *     omite" es exactamente el `filter` de abajo, igual que el `if (foto)`
+     *     del bucle anterior.
+     *
+     * Los ids repetidos se quitan ANTES de preguntar (`new Set`): si no, la
+     * misma foto volvería dos veces. Y con la lista vacía se devuelve `[]` sin
+     * abrir siquiera la base de datos.
+     */
     async byIds(ids) {
-      const salida: StoredPhoto[] = []
-      for (const id of ids) {
-        const foto = await fotosT.get(id)
-        if (foto) salida.push(foto)
-      }
-      return salida
+      if (ids.length === 0) return []
+      const unicas = [...new Set(ids)]
+      const encontradas = await fotosT.bulkGet(unicas)
+      return encontradas.filter((foto): foto is StoredPhoto => foto !== undefined)
     },
     async put(blob: Blob, extra) {
       const photo: StoredPhoto = {

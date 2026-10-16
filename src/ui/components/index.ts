@@ -56,3 +56,12 @@ export type { ConfirmDialogProps } from './ConfirmDialog'
 
 export { Acordeon } from './Acordeon'
 export type { AcordeonProps } from './Acordeon'
+
+export { GaleriaProgreso } from './GaleriaProgreso'
+export type { GaleriaProgresoProps } from './GaleriaProgreso'
+
+export { TarjetaComparacion } from './TarjetaComparacion'
+export type { TarjetaComparacionProps } from './TarjetaComparacion'
+
+export { BotonRegarRapido } from './BotonRegarRapido'
+export type { BotonRegarRapidoProps } from './BotonRegarRapido'

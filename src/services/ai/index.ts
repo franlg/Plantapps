@@ -22,7 +22,7 @@ import { parsearAnalisis } from './schema'
  *   la base de datos cambia de versión (guardar la clave en Ajustes lo refresca).
  * - Si el modelo principal no existe o se acaba la cuota, se reintenta UNA vez
  *   con el modelo de respaldo. Nunca más de 2 peticiones por operación, sea la
- *   que sea.
+ *   que sea (también con dos fotos: el respaldo recibe la petición entera).
  */
 
 /** Ajustes cacheados para poder responder a `isConfigured()` sin esperar. */
@@ -120,12 +120,25 @@ async function conReintento<T>(
 
 async function analizar(input: AiAnalyzeInput): Promise<AiAnalysisDraft> {
   const { apiKey, modelos } = await credenciales(input.modelo)
-  const prompt = construirPrompt(input.contexto)
+  // Solo se compara cuando la pantalla lo pide de verdad Y hay dos fotos que
+  // mirar. Sin foto anterior no se manda nada: el prompt ni menciona la
+  // comparación y `comparacion` viene ausente en la respuesta.
+  const comparar = input.comparar === true && input.fotoAnterior !== undefined
+  const prompt = construirPrompt(input.contexto, { tieneFotoAnterior: comparar })
 
   return conReintento(
     modelos,
     async (modelo) => {
-      const { texto } = await llamarGemini({ apiKey, modelo, prompt, foto: input.foto })
+      // Las dos fotos van en la MISMA petición (la actual primero). Si el
+      // modelo principal falla, el respaldo recibe la petición completa:
+      // cambiar de modelo no puede costarnos la comparación.
+      const { texto } = await llamarGemini({
+        apiKey,
+        modelo,
+        prompt,
+        foto: input.foto,
+        fotoAnterior: comparar ? input.fotoAnterior : undefined,
+      })
       return parsearAnalisis(texto)
     },
     'No se ha podido analizar la planta. Vuelve a intentarlo.',

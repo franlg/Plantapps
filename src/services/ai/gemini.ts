@@ -7,7 +7,9 @@ import { responseSchemaGemini } from './schema'
  * Todas las funciones de la capa (análisis, guía e identificación) caben en una
  * llamada a `generateContent`, así que no se monta ningún SDK: un `fetch` con
  * cabeceras, base64 y traducción de errores. La imagen es opcional (la guía se
- * puede pedir solo con texto) y el esquema de respuesta lo elige quien llama.
+ * puede pedir solo con texto) y puede haber DOS (`foto` + `fotoAnterior`), que
+ * es lo que permite comparar la planta con su análisis anterior. El esquema de
+ * respuesta lo elige quien llama.
  * La clave viaja en la cabecera `x-goog-api-key` y NUNCA se escribe en el código,
  * ni en los logs, ni en los mensajes de error que ve el usuario.
  */
@@ -25,8 +27,32 @@ export interface LlamarGeminiParams {
   prompt: string
   /** Foto ya comprimida (JPEG o PNG). Opcional: hay llamadas solo de texto. */
   foto?: Blob
+  /**
+   * Foto del análisis anterior, para que el modelo compare las dos.
+   *
+   * Se manda en la MISMA petición que `foto`, como segundo `inline_data` dentro
+   * del mismo `parts`: Gemini lee las imágenes en el orden en que llegan, así
+   * que el prompt dice cuál es cada una. Mandarlas juntas es lo que hace
+   * posible la comparación (dos peticiones distintas no comparten contexto).
+   *
+   * Decisión de diseño: se añade este parámetro en lugar de sustituir `foto`
+   * por un `fotos?: Blob[]`. Con el array habría que reescribir todas las
+   * llamadas actuales (análisis, guía e identificación) y el significado de
+   * cada foto viviría en el orden del array, no en el nombre; con `foto` +
+   * `fotoAnterior` el contrato se lee solo y el que se pasa una única foto
+   * (la mayoría de los casos) no cambia en nada.
+   */
+  fotoAnterior?: Blob
   /** Esquema que se le pide al modelo. Por defecto, el del análisis de foto. */
   responseSchema?: object
+}
+
+/**
+ * Las imágenes de la petición, en el orden en el que las ve el modelo:
+ * primero la foto actual, después la anterior.
+ */
+export function imagenesDeLaPeticion({ foto, fotoAnterior }: Pick<LlamarGeminiParams, 'foto' | 'fotoAnterior'>): Blob[] {
+  return [foto, fotoAnterior].filter((imagen): imagen is Blob => imagen !== undefined)
 }
 
 export interface LlamarGeminiResultado {
@@ -151,18 +177,21 @@ export async function llamarGemini({
   modelo,
   prompt,
   foto,
+  fotoAnterior,
   responseSchema = responseSchemaGemini(),
 }: LlamarGeminiParams): Promise<LlamarGeminiResultado> {
   const url = `${API_BASE}/${encodeURIComponent(modelo)}:generateContent`
 
   // Sin foto (la guía se puede pedir solo con los datos de la planta) no se manda
   // la parte `inline_data`: Gemini acepta peticiones solo de texto.
+  // Con dos fotos van las dos en el mismo `parts`, la actual primero: es el
+  // orden que el prompt promete.
   const partes: object[] = [{ text: prompt }]
-  if (foto) {
+  for (const imagen of imagenesDeLaPeticion({ foto, fotoAnterior })) {
     partes.push({
       inline_data: {
-        mime_type: foto.type || 'image/jpeg',
-        data: await blobABase64(foto),
+        mime_type: imagen.type || 'image/jpeg',
+        data: await blobABase64(imagen),
       },
     })
   }
@@ -231,8 +260,13 @@ export async function llamarGemini({
   const texto = extraerTexto(cuerpoRespuesta)
 
   if (texto === null) {
+    // El mensaje cambia según hubiera imagen que mirar: con foto el usuario
+    // entiende "vuelve a intentarlo con otra imagen"; sin ella, es la respuesta
+    // la que falta. `fotoAnterior` sola también cuenta como imagen.
+    const habiaImagen = foto !== undefined || fotoAnterior !== undefined
+
     throw new AiError(
-      foto
+      habiaImagen
         ? 'Gemini no ha devuelto ningún análisis de la foto. Vuelve a intentarlo con otra imagen.'
         : 'Gemini no ha devuelto ninguna respuesta. Vuelve a intentarlo.',
       'respuesta_invalida',

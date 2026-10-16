@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AiError } from '@/types'
-import { desenvolverJson, ESQUEMA_ANALISIS, parsearAnalisis, responseSchemaGemini } from './schema'
+import { desenvolverJson, ESQUEMA_ANALISIS, ESQUEMA_COMPARACION, parsearAnalisis, responseSchemaGemini } from './schema'
 
 const ANALISIS_VALIDO = {
   veredicto: 'regar',
@@ -100,6 +100,103 @@ describe('parsearAnalisis', () => {
   })
 })
 
+describe('parsearAnalisis con comparacion', () => {
+  const COMPARACION = {
+    tendencia: 'mejor',
+    detalle: 'Ha brotado una hoja nueva y el verde es más intenso.',
+    habiaAnterior: true,
+  }
+
+  it('guarda la comparación cuando viene completa y válida', () => {
+    const draft = parsearAnalisis(JSON.stringify({ ...ANALISIS_VALIDO, comparacion: COMPARACION }))
+
+    expect(draft.comparacion).toEqual(COMPARACION)
+  })
+
+  it('acepta las tres tendencias', () => {
+    for (const tendencia of ['mejor', 'igual', 'peor'] as const) {
+      const draft = parsearAnalisis(JSON.stringify({ ...ANALISIS_VALIDO, comparacion: { ...COMPARACION, tendencia } }))
+      expect(draft.comparacion?.tendencia).toBe(tendencia)
+    }
+  })
+
+  it('no falla cuando no viene comparación: la mayoría de los análisis no comparan', () => {
+    const draft = parsearAnalisis(JSON.stringify(ANALISIS_VALIDO))
+    expect(draft.comparacion).toBeUndefined()
+  })
+
+  it('descarta una comparación nula o vacía', () => {
+    expect(parsearAnalisis(JSON.stringify({ ...ANALISIS_VALIDO, comparacion: null })).comparacion).toBeUndefined()
+    expect(parsearAnalisis(JSON.stringify({ ...ANALISIS_VALIDO, comparacion: {} })).comparacion).toBeUndefined()
+    expect(parsearAnalisis(JSON.stringify({ ...ANALISIS_VALIDO, comparacion: 'ha mejorado' })).comparacion).toBeUndefined()
+  })
+
+  it('descarta la comparación si la tendencia no es una de las tres, sin perder el análisis', () => {
+    const draft = parsearAnalisis(
+      JSON.stringify({ ...ANALISIS_VALIDO, comparacion: { ...COMPARACION, tendencia: 'mejoradisima' } }),
+    )
+
+    expect(draft.comparacion).toBeUndefined()
+    expect(draft.veredicto).toBe(ANALISIS_VALIDO.veredicto)
+    expect(draft.salud).toBe(ANALISIS_VALIDO.salud)
+  })
+
+  it('descarta la comparación si el detalle está vacío', () => {
+    const draft = parsearAnalisis(JSON.stringify({ ...ANALISIS_VALIDO, comparacion: { ...COMPARACION, detalle: '   ' } }))
+    expect(draft.comparacion).toBeUndefined()
+  })
+
+  it('descarta la comparación si habiaAnterior es false, aunque la tendencia sea "igual"', () => {
+    // Sin foto anterior no se puede afirmar nada: la app ya sabía que no la
+    // había mandado, así que la comparación no aporta nada.
+    const draft = parsearAnalisis(
+      JSON.stringify({ ...ANALISIS_VALIDO, comparacion: { tendencia: 'igual', detalle: 'No he podido comparar.', habiaAnterior: false } }),
+    )
+
+    expect(draft.comparacion).toBeUndefined()
+    expect(draft.resumen).toBe(ANALISIS_VALIDO.resumen)
+  })
+
+  it('descarta la comparación inventada con habiaAnterior false y tendencia "mejor"', () => {
+    const draft = parsearAnalisis(
+      JSON.stringify({ ...ANALISIS_VALIDO, comparacion: { ...COMPARACION, habiaAnterior: false } }),
+    )
+
+    expect(draft.comparacion).toBeUndefined()
+    expect(draft).toMatchObject({ veredicto: ANALISIS_VALIDO.veredicto, salud: ANALISIS_VALIDO.salud })
+  })
+
+  it('no deja pasar una comparación con campos que faltan o del tipo equivocado', () => {
+    for (const comparacion of [
+      { tendencia: 'mejor', habiaAnterior: true },
+      { tendencia: 'mejor', detalle: 'Algo ha cambiado.' },
+      { detalle: 'Algo ha cambiado.', habiaAnterior: true },
+      { ...COMPARACION, habiaAnterior: 'sí' },
+      { ...COMPARACION, detalle: 7 },
+    ]) {
+      const draft = parsearAnalisis(JSON.stringify({ ...ANALISIS_VALIDO, comparacion }))
+      expect(draft.comparacion).toBeUndefined()
+      expect(draft.veredicto).toBe(ANALISIS_VALIDO.veredicto)
+    }
+  })
+
+  it('el esquema por sí solo rechaza una tendencia distinta de "igual" sin foto anterior', () => {
+    const sinFotoAnterior = ESQUEMA_COMPARACION.safeParse({
+      tendencia: 'mejor',
+      detalle: 'Ha mejorado muchísimo.',
+      habiaAnterior: false,
+    })
+    expect(sinFotoAnterior.success).toBe(false)
+
+    const igualSinFotoAnterior = ESQUEMA_COMPARACION.safeParse({
+      tendencia: 'igual',
+      detalle: 'No he podido comparar: otra luz.',
+      habiaAnterior: false,
+    })
+    expect(igualSinFotoAnterior.success).toBe(true)
+  })
+})
+
 describe('desenvolverJson', () => {
   it('recorta el bloque ```json', () => {
     expect(desenvolverJson('```json\n{"a":1}\n```')).toBe('{"a":1}')
@@ -144,6 +241,7 @@ describe('responseSchemaGemini', () => {
       'recomendaciones',
       'confianza',
       'resumen',
+      'comparacion',
     ])
 
     for (const [clave, definicion] of Object.entries(esquema.properties)) {
@@ -162,12 +260,34 @@ describe('responseSchemaGemini', () => {
   })
 
   it('solo exige en required los campos que no admiten null, en el orden de properties', () => {
-    // frecuenciaRiegoDias y maceta son nullish: el modelo puede omitirlos.
+    // frecuenciaRiegoDias y maceta son nullish, y comparacion es opcional: el
+    // modelo puede omitirlos. Un análisis sin comparar es el caso normal.
     expect(esquema.required).not.toContain('frecuenciaRiegoDias')
     expect(esquema.required).not.toContain('maceta')
+    expect(esquema.required).not.toContain('comparacion')
     expect(esquema.required).toEqual(
-      Object.keys(esquema.properties).filter((c) => c !== 'frecuenciaRiegoDias' && c !== 'maceta'),
+      Object.keys(esquema.properties).filter(
+        (c) => c !== 'frecuenciaRiegoDias' && c !== 'maceta' && c !== 'comparacion',
+      ),
     )
+  })
+
+  it('declara comparacion como objeto opcional con el enum de tendencia', () => {
+    const comparacion = esquema.properties.comparacion as {
+      type: string
+      properties: Record<string, Record<string, unknown>>
+      required: string[]
+    }
+
+    expect(comparacion.type).toBe('object')
+    expect(comparacion.required).toEqual(['tendencia', 'detalle', 'habiaAnterior'])
+    expect(comparacion.properties.tendencia).toEqual({
+      type: 'string',
+      format: 'enum',
+      enum: ['mejor', 'igual', 'peor'],
+      description: expect.any(String),
+    })
+    expect(Object.keys(comparacion.properties)).toEqual(['tendencia', 'detalle', 'habiaAnterior'])
   })
 
   it('es serializable: el cuerpo de la petición no puede romperse', () => {

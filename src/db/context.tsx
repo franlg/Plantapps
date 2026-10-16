@@ -99,9 +99,14 @@ export function useFotosProgreso(plantId: ID | undefined): FotoProgreso[] {
       if (!planta) return []
 
       const analisis = await db.analyses.listByPlant(plantId)
-      const fotos = await db.photos.byIds(
-        analisis.map((a) => a.photoId).filter((id): id is ID => Boolean(id)),
-      )
+
+      // La portada se pide **siempre**, también si no hay ningún análisis: si no,
+      // una planta recién creada con foto se quedaría sin galería ninguna.
+      const ids = new Set<ID>()
+      for (const a of analisis) if (a.photoId) ids.add(a.photoId)
+      if (planta.fotoPortadaId) ids.add(planta.fotoPortadaId)
+
+      const fotos = await db.photos.byIds([...ids])
       const porId = new Map(fotos.map((f) => [f.id, f]))
 
       const entradas: FotoProgreso[] = []
@@ -116,12 +121,12 @@ export function useFotosProgreso(plantId: ID | undefined): FotoProgreso[] {
         })
       }
 
-      if (planta.fotoPortadaId && porId.has(planta.fotoPortadaId)) {
-        // La portada va la primera si no es ya la del análisis más reciente.
-        const yaEstaba = entradas[0]?.id === planta.fotoPortadaId
-        if (!yaEstaba) {
-          entradas.unshift({ id: planta.fotoPortadaId, fecha: planta.actualizadoEn, origen: 'portada' })
-        }
+      // La portada solo se antepone si no sale ya de algún análisis. Si coincide
+      // con la foto de un análisis antiguo, meterla otra vez la saldría duplicada
+      // en la galería, que es justo lo que un usuario ve como un fallo.
+      const esPortadaDeUnAnalisis = entradas.some((e) => e.id === planta.fotoPortadaId)
+      if (planta.fotoPortadaId && porId.has(planta.fotoPortadaId) && !esPortadaDeUnAnalisis) {
+        entradas.unshift({ id: planta.fotoPortadaId, fecha: planta.actualizadoEn, origen: 'portada' })
       }
 
       return entradas

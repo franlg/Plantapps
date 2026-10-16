@@ -28,6 +28,12 @@ function cuerpoDeLaPeticion(indice = 0): Record<string, unknown> {
   return JSON.parse(init.body as string) as Record<string, unknown>
 }
 
+/** Las partes `inline_data` de la petición, en el orden en el que se mandan. */
+function partesConInlineData(indice = 0): Array<Record<string, unknown>> {
+  const contents = cuerpoDeLaPeticion(indice).contents as Array<{ parts: Array<Record<string, unknown>> }>
+  return (contents[0]?.parts ?? []).filter((parte) => 'inline_data' in parte)
+}
+
 async function expectAiError(promesa: Promise<unknown>, codigo: string): Promise<AiError> {
   let error: unknown
   try {
@@ -139,6 +145,60 @@ describe('llamarGemini', () => {
     expect(texto).toBe('{"a":1}')
   })
 
+  it('manda las DOS fotos en el mismo parts: primero la actual, después la anterior', async () => {
+    fetchMock.mockResolvedValue(okConTexto('{"veredicto":"mejor"}'))
+
+    const actual = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' })
+    const anterior = new Blob([new Uint8Array([9, 8, 7])], { type: 'image/jpeg' })
+
+    await llamarGemini({ apiKey: 'k', modelo: 'm', prompt: 'compara', foto: actual, fotoAnterior: anterior })
+
+    expect(cuerpoDeLaPeticion().contents).toEqual([
+      {
+        role: 'user',
+        parts: [
+          { text: 'compara' },
+          { inline_data: { mime_type: 'image/jpeg', data: btoa('\u0001\u0002\u0003') } },
+          { inline_data: { mime_type: 'image/jpeg', data: btoa('\u0009\u0008\u0007') } },
+        ],
+      },
+    ])
+  })
+
+  it('respeta el mime de cada foto', async () => {
+    fetchMock.mockResolvedValue(okConTexto('{}'))
+
+    await llamarGemini({
+      apiKey: 'k',
+      modelo: 'm',
+      prompt: 'p',
+      foto: new Blob([new Uint8Array([1])], { type: 'image/jpeg' }),
+      fotoAnterior: new Blob([new Uint8Array([1])], { type: 'image/png' }),
+    })
+
+    const partes = partesConInlineData()
+    expect(partes.map((parte) => (parte.inline_data as { mime_type: string }).mime_type)).toEqual([
+      'image/jpeg',
+      'image/png',
+    ])
+  })
+
+  it('manda una sola imagen cuando no hay foto anterior', async () => {
+    fetchMock.mockResolvedValue(okConTexto('{"veredicto":"todo_ok"}'))
+
+    await llamarGemini({ apiKey: 'k', modelo: 'm', prompt: 'p', foto: FOTO, fotoAnterior: undefined })
+
+    expect(partesConInlineData()).toHaveLength(1)
+  })
+
+  it('manda la foto anterior incluso si no viene la actual, en lugar de perderla', async () => {
+    fetchMock.mockResolvedValue(okConTexto('{}'))
+
+    await llamarGemini({ apiKey: 'k', modelo: 'm', prompt: 'p', fotoAnterior: FOTO })
+
+    expect(partesConInlineData()).toHaveLength(1)
+  })
+
   it('traduce el 429 a cuota', async () => {
     fetchMock.mockResolvedValue(errorGemini(429, 'Quota exceeded for quota metric'))
 
@@ -223,6 +283,16 @@ describe('llamarGemini', () => {
       'respuesta_invalida',
     )
     expect(error.message).toContain('no ha devuelto ningún análisis')
+  })
+
+  it('con dos fotos, el aviso de "sin candidatos" sigue siendo el de la foto', async () => {
+    fetchMock.mockResolvedValue(respuesta(200, { candidates: [] }))
+
+    const error = await expectAiError(
+      llamarGemini({ apiKey: 'k', modelo: 'm', prompt: 'p', foto: FOTO, fotoAnterior: FOTO }),
+      'respuesta_invalida',
+    )
+    expect(error.message).toContain('ningún análisis de la foto')
   })
 
   it('avisa cuando la respuesta no es JSON', async () => {

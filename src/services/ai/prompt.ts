@@ -4,6 +4,14 @@ import { LUZ_LABELS } from '@/types'
 /** Máximo de eventos de historial que se envían: más que eso solo gasta tokens. */
 const MAX_HISTORIAL = 10
 
+/** Opciones de la comparación con la foto anterior. */
+export interface OpcionesComparacion {
+  /** `true` si la petición lleva también la foto del análisis anterior. */
+  tieneFotoAnterior: boolean
+  /** Fecha del análisis anterior, si se sabe. Sin ella se dice "hace un tiempo". */
+  fechaAnterior?: string | null
+}
+
 function esVacio(valor: string | number | null | undefined): boolean {
   return valor === null || valor === undefined || valor === ''
 }
@@ -73,17 +81,49 @@ const REGLAS = `- Responde ÚNICAMENTE con un objeto JSON válido que cumpla el 
 - "recomendaciones": de 1 a 3 acciones concretas, escritas como órdenes cortas.`
 
 /**
+ * Qué tiene que hacer con las dos fotos, o por qué no hay nada que comparar.
+ * Sin foto anterior el campo `comparacion` tiene que venir AUSENTE: si el
+ * modelo lo inventa, `parsearAnalisis` lo descarta.
+ */
+function bloqueComparacion({ tieneFotoAnterior, fechaAnterior }: OpcionesComparacion): string {
+  if (!tieneFotoAnterior) {
+    return 'NO TE PASO NINGUNA FOTO ANTERIOR de esta planta, así que NO hay nada que comparar: deja el campo "comparacion" FUERA de la respuesta. No lo inventes.'
+  }
+
+  const cuando = fechaAnterior?.trim() ? `del ${fechaAnterior.trim()}` : 'de hace un tiempo'
+
+  return `TE PASO DOS FOTOS DE LA MISMA PLANTA, en este orden:
+1. La PRIMERA imagen es la foto de AHORA, la que tienes que analizar.
+2. La SEGUNDA imagen es la foto de un análisis anterior (${cuando}).
+
+COMPARACIÓN, además de responder a lo de siempre:
+- Compara las dos fotos una al lado de la otra y di si la planta ha MEJORADO, sigue IGUAL o ha EMPEORADO ("tendencia": "mejor", "igual" o "peor").
+- Fíjate en: hojas nuevas que hayan brotado, altura y porte, color (verde más intenso o más amarillo), y manchas o síntomas que aparezcan o desaparezcan.
+- Sé HONESTO: si no puedes comparar (la foto está hecha desde otro ángulo, con otra luz, más cerca, o ni siquiera es la misma planta), pon "habiaAnterior": false, "tendencia": "igual" y explica el motivo en "detalle".
+- NO INVENTES CAMBIOS: si no ves una diferencia clara entre las dos fotos, "tendencia" es "igual".
+- "detalle": una o dos frases en lenguaje sencillo, para alguien que no sabe de plantas. Di QUÉ ha cambiado, no solo que ha cambiado.
+- Si has podido comparar, "habiaAnterior" es true.`
+}
+
+/**
  * Prompt que se manda junto a la foto de la planta.
  * Todo el texto visible para el modelo está en español; el modelo responde JSON.
+ *
+ * Con `tieneFotoAnterior` se le avisan de que van dos imágenes y se le pide la
+ * comparación; sin ella, el prompt es exactamente el de siempre.
  */
-export function construirPrompt(contexto: PlantContext): string {
+export function construirPrompt(contexto: PlantContext, comparacion?: OpcionesComparacion): string {
+  const conComparacion = comparacion?.tieneFotoAnterior === true
+
   return `Eres un experto en el cuidado de plantas de interior y en el diagnóstico visual a partir de una foto.
 Quien te lee no es jardinero: ve la foto de una planta de casa y quiere saber si tiene que hacer algo hoy.
 
-Te pasan una única foto y los datos de esa planta.
+Te pasan ${conComparacion ? 'DOS fotos de la misma planta' : 'una única foto'} y los datos de esa planta.
 
 DATOS DE LA PLANTA (te los da la aplicación; no los ves en la foto):
 ${bloqueDatos(contexto)}
+
+${bloqueComparacion(comparacion ?? { tieneFotoAnterior: false })}
 
 LO QUE TIENES QUE RESPONDER:
 ${PREGUNTAS}

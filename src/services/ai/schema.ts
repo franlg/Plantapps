@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AiAnalysisDraft } from '@/types'
+import type { AiAnalysisDraft, ComparacionIa } from '@/types'
 import { AiError } from '@/types'
 
 /**
@@ -11,17 +11,52 @@ import { AiError } from '@/types'
  *     entiende `generationConfig.responseSchema`, con descripciones para que el
  *     modelo sepa qué significa cada campo.
  * Si tocas uno, toca el otro.
+ *
+ * `comparacion` es la excepción deliberada a la regla de "todo obligatorio": es
+ * opcional en los dos sitios, porque solo se rellena cuando la petición llevaba
+ * dos fotos. Un análisis sin comparar es lo normal y tiene que funcionar.
  */
 
 export const VEREDICTOS = ['regar', 'no_regar', 'trasplantar', 'problema', 'todo_ok'] as const
 export const CONFIANZAS = ['alta', 'media', 'baja'] as const
 export const GRAVEDADES = ['ninguna', 'leve', 'moderada', 'grave'] as const
+export const TENDENCIAS = ['mejor', 'igual', 'peor'] as const
 
 export const MAX_ACCION = 160
 export const MIN_SALUD = 0
 export const MAX_SALUD = 100
 export const MIN_FRECUENCIA = 1
 export const MAX_FRECUENCIA = 90
+
+/**
+ * Comparación con la foto anterior. Es OPCIONAL: la mayoría de los análisis no
+ * comparan nada, así que su ausencia no puede hacer fallar el análisis entero.
+ * Se valida igual de estricta que el resto (por eso vive aquí y no se normaliza
+ * a ojo), pero si no encaja se descarta en `normalizarComparacion` en lugar de
+ * llevarse por delante el diagnóstico.
+ */
+export const ESQUEMA_COMPARACION: z.ZodType<ComparacionIa> = z
+  .object({
+    tendencia: z.enum(TENDENCIAS).describe('Si la planta ha "mejor", sigue "igual" o ha "peor" respecto a la foto anterior'),
+    detalle: z
+      .string()
+      .trim()
+      .min(1)
+      .describe('Qué ha cambiado, en una o dos frases en lenguaje sencillo'),
+    habiaAnterior: z
+      .boolean()
+      .describe('true si de verdad había una segunda foto con la que comparar; false si no has podido'),
+  })
+  // Sin foto anterior no se puede afirmar que la planta ha cambiado: lo único
+  // honesto es "igual".
+  .superRefine((comparacion, ctx) => {
+    if (!comparacion.habiaAnterior && comparacion.tendencia !== 'igual') {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Sin foto anterior la tendencia solo puede ser "igual".',
+      })
+    }
+  })
 
 /**
  * Validación estricta de la respuesta del modelo.
@@ -58,6 +93,9 @@ export const ESQUEMA_ANALISIS: z.ZodType<AiAnalysisDraft> = z.object({
   recomendaciones: z.array(z.string()).describe('Acciones concretas: "mover a media sombra", "abonar"'),
   confianza: z.enum(CONFIANZAS).describe('Cuánto se fía el modelo de su propio diagnóstico'),
   resumen: z.string().trim().min(1).describe('1-3 frases en lenguaje sencillo para el usuario'),
+  // Opcional a propósito: solo se rellena cuando la petición llevaba foto
+  // anterior. `normalizarComparacion` ya ha validado y limpiado el valor.
+  comparacion: ESQUEMA_COMPARACION.optional().describe('Comparación con la foto anterior, solo si se pasaron dos fotos'),
 })
 
 /**
@@ -145,9 +183,39 @@ export function responseSchemaGemini(): object {
           'De 1 a 3 frases en lenguaje sencillo para alguien que no sabe de plantas. ' +
           'Si no estás seguro, dilo aquí y baja la confianza.',
       },
+      comparacion: {
+        type: 'object',
+        description:
+          'Comparación con la foto anterior. SOLO rellénala si te he pasado DOS fotos de la misma planta. ' +
+          'Si solo hay una foto, NO pongas este campo.',
+        properties: {
+          tendencia: {
+            type: 'string',
+            format: 'enum',
+            enum: [...TENDENCIAS],
+            description:
+              '"mejor" si la planta está claramente mejor que en la foto anterior, "peor" si está peor y ' +
+              '"igual" si no hay una diferencia clara. Si no has podido comparar, "igual".',
+          },
+          detalle: {
+            type: 'string',
+            description:
+              'Qué ha cambiado, en una o dos frases y en lenguaje sencillo ("ha brotado una hoja nueva y el ' +
+              'verde es más intenso"). Di también aquí por qué no has podido comparar, si es el caso.',
+          },
+          habiaAnterior: {
+            type: 'boolean',
+            description:
+              'true si había una segunda foto y has podido comparar; false si no has podido (otro ángulo, ' +
+              'otra luz, otra planta). Si es false, "tendencia" tiene que ser "igual".',
+          },
+        },
+        required: ['tendencia', 'detalle', 'habiaAnterior'],
+      },
     },
     // El orden debe coincidir con el de `properties`.
-    // `frecuenciaRiegoDias` admite null, así que queda fuera de `required`.
+    // `frecuenciaRiegoDias` y `maceta` admiten null, y `comparacion` es opcional
+    // (la mayoría de los análisis no comparan), así que quedan fuera de `required`.
     required: [
       'veredicto',
       'salud',
@@ -164,12 +232,50 @@ export function responseSchemaGemini(): object {
 }
 
 /** Campos que el esquema declara opcionales: si vienen null o vacíos, se descartan. */
-const OPCIONALES_ANULABLES = ['problema', 'gravedad'] as const
+const OPCIONALES_ANULABLES = ['problema', 'gravedad', 'comparacion'] as const
+
+/**
+ * La comparación con la foto anterior, o `undefined` si no vale.
+ *
+ * Se descarta (nunca se falla el análisis entero) cuando:
+ * - no es un objeto, o le falta el detalle;
+ * - `tendencia` no es uno de los tres valores: el modelo se ha inventado un
+ *   cuarto estado y no sabemos qué quiere decir;
+ * - `habiaAnterior` no es `true`: si el modelo confiesa que no había foto
+ *   anterior, la app ya lo sabía (no se la había mandado) y una comparación sin
+ *   segunda foto no aporta nada. `ESQUEMA_COMPARACION` remacha la misma idea
+ *   por el otro lado: sin foto anterior la tendencia solo puede ser "igual".
+ */
+function normalizarComparacion(valor: unknown): ComparacionIa | undefined {
+  if (!esRegistro(valor)) return undefined
+
+  const tendencia = valor.tendencia
+  const detalle = typeof valor.detalle === 'string' ? valor.detalle.trim() : ''
+
+  if (typeof tendencia !== 'string' || !(TENDENCIAS as readonly string[]).includes(tendencia) || !detalle) {
+    return undefined
+  }
+
+  // La validación estricta manda: si el modelo se inventa la tendencia, o jura
+  // que no había foto anterior y a la vez dice que la planta ha cambiado, se
+  // descarta la comparación.
+  const resultado = ESQUEMA_COMPARACION.safeParse({
+    tendencia,
+    detalle,
+    habiaAnterior: valor.habiaAnterior,
+  })
+  if (!resultado.success) return undefined
+
+  // Aunque el modelo confiese que no ha podido comparar, la app ya lo sabía: no
+  // le había mandado foto anterior. Una comparación vacía no aporta nada.
+  return resultado.data.habiaAnterior === true ? resultado.data : undefined
+}
 
 /**
  * Limpieza mínima antes de validar.
  * - Se elimina lo que venga como `undefined` o `null` en campos opcionales.
  * - Un `problema` en blanco se considera ausente (no aporta nada).
+ * - La `comparacion` se valida; si el modelo se la inventa mal, se descarta.
  * - Si falta `frecuenciaRiegoDias`, se cuenta como `null`: el modelo lo omite
  *   cuando no quiere arriesgarse a inventar un número.
  */
@@ -181,6 +287,13 @@ function normalizar(entrada: Record<string, unknown>): Record<string, unknown> {
     if (valor === null && (OPCIONALES_ANULABLES as readonly string[]).includes(clave)) continue
     if (clave === 'problema' && typeof valor === 'string' && valor.trim() === '') continue
     salida[clave] = valor
+  }
+
+  const comparacion = normalizarComparacion(salida.comparacion)
+  if (comparacion) {
+    salida.comparacion = comparacion
+  } else {
+    delete salida.comparacion
   }
 
   if (!('frecuenciaRiegoDias' in salida)) salida.frecuenciaRiegoDias = null

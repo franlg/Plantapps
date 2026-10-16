@@ -45,6 +45,14 @@ const CONTEXTO: PlantContext = {
 
 const FOTO = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' })
 
+/** La foto del análisis anterior tiene que ser distinguible de la actual. */
+const FOTO_ANTERIOR = new Blob([new Uint8Array([7, 8, 9])], { type: 'image/jpeg' })
+
+/** Lo mismo que hace `blobABase64`, para no depender de ella en las aserciones. */
+function base64De(bytes: number[]): string {
+  return btoa(String.fromCharCode(...bytes))
+}
+
 const ANALISIS = {
   veredicto: 'regar',
   salud: 72,
@@ -162,6 +170,11 @@ function cuerpoDeLaPeticion(indice = 0): Record<string, unknown> {
 function partesDeLaPeticion(indice = 0): Array<Record<string, unknown>> {
   const contents = cuerpoDeLaPeticion(indice).contents as Array<{ parts: Array<Record<string, unknown>> }>
   return contents[0]?.parts ?? []
+}
+
+/** Las partes con imagen, en el orden en el que viajan. */
+function imagenesDeLaPeticion(indice = 0): Array<Record<string, unknown>> {
+  return partesDeLaPeticion(indice).filter((parte) => 'inline_data' in parte)
 }
 
 async function expectAiError(promesa: Promise<unknown>, codigo: string): Promise<AiError> {
@@ -323,6 +336,124 @@ describe('aiService.analyze', () => {
     expect(prompt).toContain('Monstera deliciosa')
     expect(prompt).toContain('13')
     expect(prompt).toContain('¿Hay que regar ahora?')
+  })
+})
+
+describe('aiService.analyze con foto anterior', () => {
+  const COMPARACION = {
+    tendencia: 'mejor',
+    detalle: 'Ha brotado una hoja nueva y el verde es más intenso.',
+    habiaAnterior: true,
+  }
+
+  it('manda las DOS fotos en la misma petición, primero la actual', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(ANALISIS)))
+    const { aiService } = await cargarServicio()
+
+    await aiService.analyze({ ...ENTRADA, fotoAnterior: FOTO_ANTERIOR, comparar: true })
+
+    expect(imagenesDeLaPeticion()).toEqual([
+      { inline_data: { mime_type: 'image/jpeg', data: base64De([1, 2, 3]) } },
+      { inline_data: { mime_type: 'image/jpeg', data: base64De([7, 8, 9]) } },
+    ])
+  })
+
+  it('sin foto anterior no manda comparación y el prompt no la menciona', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(ANALISIS)))
+    const { aiService } = await cargarServicio()
+
+    const draft = await aiService.analyze(ENTRADA)
+
+    expect(imagenesDeLaPeticion()).toHaveLength(1)
+    expect(draft.comparacion).toBeUndefined()
+    expect(partesDeLaPeticion()[0]?.text).not.toContain('DOS fotos')
+    expect(partesDeLaPeticion()[0]?.text).toContain('una única foto')
+  })
+
+  it('no manda la foto anterior si no se pide comparar', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(ANALISIS)))
+    const { aiService } = await cargarServicio()
+
+    await aiService.analyze({ ...ENTRADA, fotoAnterior: FOTO_ANTERIOR })
+
+    expect(imagenesDeLaPeticion()).toHaveLength(1)
+  })
+
+  it('tampoco compara si la petición lleva comparar en false', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(ANALISIS)))
+    const { aiService } = await cargarServicio()
+
+    await aiService.analyze({ ...ENTRADA, fotoAnterior: FOTO_ANTERIOR, comparar: false })
+
+    expect(imagenesDeLaPeticion()).toHaveLength(1)
+    expect(partesDeLaPeticion()[0]?.text).toContain('NO TE PASO NINGUNA FOTO ANTERIOR')
+  })
+
+  it('el prompt con dos fotos explica cuál es cada imagen y pide la comparación', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify(ANALISIS)))
+    const { aiService } = await cargarServicio()
+
+    await aiService.analyze({ ...ENTRADA, fotoAnterior: FOTO_ANTERIOR, comparar: true })
+
+    const prompt = partesDeLaPeticion()[0]?.text ?? ''
+    expect(prompt).toContain('DOS fotos de la misma planta')
+    expect(prompt).toContain('La PRIMERA imagen es la foto de AHORA')
+    expect(prompt).toContain('La SEGUNDA imagen es la foto de un análisis anterior')
+    expect(prompt).toContain('"habiaAnterior": false')
+    expect(prompt).toContain('NO INVENTES CAMBIOS')
+  })
+
+  it('guarda la comparación que devuelve el modelo', async () => {
+    fetchMock.mockResolvedValue(exito(JSON.stringify({ ...ANALISIS, comparacion: COMPARACION })))
+    const { aiService } = await cargarServicio()
+
+    const draft = await aiService.analyze({ ...ENTRADA, fotoAnterior: FOTO_ANTERIOR, comparar: true })
+
+    expect(draft.comparacion).toEqual(COMPARACION)
+  })
+
+  it('descarta una comparación con tendencia inventada sin perder el análisis', async () => {
+    fetchMock.mockResolvedValue(
+      exito(JSON.stringify({ ...ANALISIS, comparacion: { ...COMPARACION, tendencia: 'mejorisima' } })),
+    )
+    const { aiService } = await cargarServicio()
+
+    const draft = await aiService.analyze({ ...ENTRADA, fotoAnterior: FOTO_ANTERIOR, comparar: true })
+
+    expect(draft.comparacion).toBeUndefined()
+    expect(draft.veredicto).toBe(ANALISIS.veredicto)
+    expect(draft.salud).toBe(ANALISIS.salud)
+  })
+
+  it('descarta la comparación si el modelo dice que no había foto anterior', async () => {
+    fetchMock.mockResolvedValue(
+      exito(JSON.stringify({ ...ANALISIS, comparacion: { ...COMPARACION, habiaAnterior: false } })),
+    )
+    const { aiService } = await cargarServicio()
+
+    const draft = await aiService.analyze({ ...ENTRADA, fotoAnterior: FOTO_ANTERIOR, comparar: true })
+
+    expect(draft.comparacion).toBeUndefined()
+    expect(draft.resumen).toBe(ANALISIS.resumen)
+  })
+
+  it('reintenta UNA vez con el respaldo y las dos fotos siguen en la petición', async () => {
+    fetchMock
+      .mockResolvedValueOnce(fallo(404, 'models/modelo-principal is not found for API version v1beta'))
+      .mockResolvedValueOnce(exito(JSON.stringify({ ...ANALISIS, comparacion: COMPARACION })))
+
+    const { aiService } = await cargarServicio()
+    const draft = await aiService.analyze({ ...ENTRADA, fotoAnterior: FOTO_ANTERIOR, comparar: true })
+
+    expect(draft.comparacion).toEqual(COMPARACION)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    // El respaldo recibe la petición completa: cambiar de modelo no puede
+    // costarnos la comparación.
+    for (const indice of [0, 1]) {
+      expect(imagenesDeLaPeticion(indice)).toHaveLength(2)
+    }
+    expect(urlsDeLasPeticiones()[1]).toContain('models/modelo-respaldo:generateContent')
   })
 })
 

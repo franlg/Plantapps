@@ -94,3 +94,80 @@ describe('construirPrompt', () => {
     expect(prompt).not.toContain('evento 10')
   })
 })
+
+describe('construirPrompt con foto anterior', () => {
+  it('avisa de que hay DOS fotos y dice cuál es cada una', () => {
+    const prompt = construirPrompt(CONTEXTO, { tieneFotoAnterior: true })
+
+    expect(prompt).toContain('DOS fotos de la misma planta')
+    expect(prompt).not.toContain('una única foto')
+    expect(prompt).toContain('La PRIMERA imagen es la foto de AHORA')
+    expect(prompt).toContain('La SEGUNDA imagen es la foto de un análisis anterior')
+  })
+
+  it('pide la comparación concreta: hojas nuevas, altura, color y manchas', () => {
+    const prompt = construirPrompt(CONTEXTO, { tieneFotoAnterior: true })
+
+    expect(prompt).toContain('COMPARACIÓN')
+    expect(prompt).toContain('hojas nuevas')
+    expect(prompt).toContain('altura y porte')
+    expect(prompt).toContain('color')
+    expect(prompt).toContain('manchas o síntomas que aparezcan o desaparezcan')
+    expect(prompt).toContain('"tendencia": "mejor"')
+  })
+
+  it('pide honestidad cuando no se puede comparar y no inventar cambios', () => {
+    const prompt = construirPrompt(CONTEXTO, { tieneFotoAnterior: true })
+
+    expect(prompt).toContain('Sé HONESTO')
+    expect(prompt).toContain('"habiaAnterior": false')
+    expect(prompt).toContain('NO INVENTES CAMBIOS')
+    expect(prompt).toContain('"tendencia" es "igual"')
+    expect(prompt).toContain('otro ángulo, con otra luz')
+  })
+
+  it('pasa la fecha del análisis anterior cuando se sabe', () => {
+    const prompt = construirPrompt(CONTEXTO, { tieneFotoAnterior: true, fechaAnterior: '3 de octubre de 2026' })
+    expect(prompt).toContain('del 3 de octubre de 2026')
+  })
+
+  it('dice "de hace un tiempo" si no se sabe la fecha', () => {
+    const prompt = construirPrompt(CONTEXTO, { tieneFotoAnterior: true })
+    expect(prompt).toContain('de hace un tiempo')
+    expect(prompt).not.toContain('undefined')
+
+    const sinFecha = construirPrompt(CONTEXTO, { tieneFotoAnterior: true, fechaAnterior: '   ' })
+    expect(sinFecha).toContain('de hace un tiempo')
+  })
+
+  it('sin foto anterior no menciona la comparación y la prohíbe expresamente', () => {
+    const prompt = construirPrompt(CONTEXTO)
+
+    expect(prompt).toContain('una única foto')
+    expect(prompt).not.toContain('DOS fotos')
+    expect(prompt).not.toContain('SEGUNDA imagen')
+    expect(prompt).toContain('NO TE PASO NINGUNA FOTO ANTERIOR')
+    expect(prompt).toContain('deja el campo "comparacion" FUERA de la respuesta')
+  })
+
+  it('tampoco compara si la opción viene con tieneFotoAnterior en false', () => {
+    const prompt = construirPrompt(CONTEXTO, { tieneFotoAnterior: false })
+    expect(prompt).toContain('una única foto')
+    expect(prompt).toContain('NO TE PASO NINGUNA FOTO ANTERIOR')
+  })
+
+  it('los datos de la planta se mantienen intactos con y sin comparación', () => {
+    const conComparacion = construirPrompt(CONTEXTO, { tieneFotoAnterior: true })
+    const sinComparacion = construirPrompt(CONTEXTO)
+
+    for (const prompt of [conComparacion, sinComparacion]) {
+      expect(prompt).toContain('Monstera del salón')
+      expect(prompt).toContain('¿Hay que regar ahora?')
+      expect(prompt).toContain('Responde ÚNICAMENTE con un objeto JSON válido')
+    }
+
+    // Lo único que cambia entre los dos es el bloque de la comparación.
+    const datos = (prompt: string) => prompt.split('DATOS DE LA PLANTA')[1]?.split('\n\n')[0] ?? ''
+    expect(datos(conComparacion)).toBe(datos(sinComparacion))
+  })
+})

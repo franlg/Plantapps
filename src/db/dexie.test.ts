@@ -2,9 +2,11 @@ import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import Dexie from 'dexie'
 import type { Db } from '@/services/contracts'
-import type { AiAnalysisDraft, GuiaCuidadosDraft } from '@/types'
+import type { AiAnalysisDraft, FotoProgreso, GuiaCuidadosDraft, ID, StoredPhoto } from '@/types'
 import { SETTINGS_POR_DEFECTO } from '@/types'
 import { createIndexedDb } from './dexie'
+import { createMemoryDb } from './memory'
+import { getRawStore } from './backup'
 
 /**
  * El `Blob` de jsdom no se puede clonar (fake-indexeddb clona con `structuredClone`,
@@ -690,5 +692,376 @@ describe('Migración de la base de la versión 1 a la versión 2', () => {
     expect((await otra.plants.get('planta-v1'))?.nombre).toBe('Ficus de la abuela')
     expect((await otra.guides.get('planta-v1'))?.resumen).toBe('Primera vez.')
     expect(await filasDeGuia(nombre, 'planta-v1')).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// photos.byIds: la galería de progreso en un solo viaje
+// ---------------------------------------------------------------------------
+
+describe('photos.byIds (una consulta en bloque, no N viajes)', () => {
+  it('devuelve todas las fotos pedidas con su contenido y sus datos intactos', async () => {
+    const db = nuevaDb()
+    const jpeg = await db.photos.put(fotoFalsa([1, 2, 3, 4, 5]), {
+      thumb: new Blob([new Uint8Array([9, 9])], { type: 'image/jpeg' }),
+      width: 1280,
+      height: 960,
+    })
+    const png = await db.photos.put(new Blob([new Uint8Array([7, 7, 7])], { type: 'image/png' }), {
+      thumb: new Blob([new Uint8Array([1])], { type: 'image/png' }),
+      width: 640,
+      height: 480,
+    })
+
+    const fotos = await db.photos.byIds([jpeg.id, png.id])
+
+    // En el orden en que se han pedido, que es el orden de los análisis.
+    expect(fotos).toHaveLength(2)
+    expect(fotos.map((f) => f.id)).toEqual([jpeg.id, png.id])
+
+    const [primera, segunda] = fotos
+    expect(await bytesDe(primera?.blob ?? new Blob())).toEqual([1, 2, 3, 4, 5])
+    expect(await bytesDe(primera?.thumb ?? new Blob())).toEqual([9, 9])
+    expect(primera?.mime).toBe('image/jpeg')
+    expect(primera?.width).toBe(1280)
+    expect(primera?.height).toBe(960)
+    expect(primera?.bytes).toBe(5)
+    expect(primera?.creadoEn).toBe(jpeg.creadoEn)
+
+    expect(await bytesDe(segunda?.blob ?? new Blob())).toEqual([7, 7, 7])
+    expect(await bytesDe(segunda?.thumb ?? new Blob())).toEqual([1])
+    expect(segunda?.mime).toBe('image/png')
+    expect(segunda?.width).toBe(640)
+    expect(segunda?.height).toBe(480)
+    expect(segunda?.bytes).toBe(3)
+    expect(segunda?.creadoEn).toBe(png.creadoEn)
+  })
+
+  it('con ids vacíos devuelve una lista vacía y no falla', async () => {
+    const db = nuevaDb()
+    await db.photos.put(fotoFalsa([1]))
+    const vacia = nuevaDb()
+
+    // Con fotos y con la base vacía: nada que pedir, nada que devolver.
+    expect(await db.photos.byIds([])).toEqual([])
+    expect(await vacia.photos.byIds([])).toEqual([])
+  })
+
+  it('omite las fotos que no existen, incluso si se piden solas', async () => {
+    const db = nuevaDb()
+    const una = await db.photos.put(fotoFalsa([1]))
+    const otra = await db.photos.put(fotoFalsa([2]))
+
+    const fotos = await db.photos.byIds([una.id, 'foto-fantasma', otra.id])
+    expect(fotos.map((f) => f.id)).toEqual([una.id, otra.id])
+
+    expect(await db.photos.byIds(['no-existe-1', 'no-existe-2'])).toEqual([])
+  })
+
+  it('no repite las fotos cuando la lista trae ids duplicados', async () => {
+    const db = nuevaDb()
+    const una = await db.photos.put(fotoFalsa([1]))
+    const otra = await db.photos.put(fotoFalsa([2]))
+
+    const fotos = await db.photos.byIds([una.id, otra.id, una.id, otra.id, una.id])
+
+    expect(fotos).toHaveLength(2)
+    // En el orden de su primera aparición, igual que la implementación en memoria.
+    expect(fotos.map((f) => f.id)).toEqual([una.id, otra.id])
+  })
+
+  it('devuelve las 200 fotos de una galería larga, en el orden pedido', async () => {
+    const db = nuevaDb()
+    const contenido = new Map<ID, number[]>()
+    for (let i = 0; i < 200; i += 1) {
+      const bytes = [i % 251, (i * 7) % 251]
+      const foto = await db.photos.put(fotoFalsa(bytes))
+      contenido.set(foto.id, bytes)
+    }
+    // Se piden al revés: el resultado sigue al pedido, no viene ordenado por id.
+    const pedido = [...contenido.keys()].reverse()
+
+    const fotos = await db.photos.byIds(pedido)
+
+    expect(fotos).toHaveLength(200)
+    expect(fotos.map((f) => f.id)).toEqual(pedido)
+    for (const foto of fotos) {
+      expect(foto.bytes).toBe(2)
+      expect(await bytesDe(foto.blob)).toEqual(contenido.get(foto.id))
+      // Sin miniatura propia, la miniatura es el propio blob.
+      expect(await bytesDe(foto.thumb)).toEqual(contenido.get(foto.id))
+    }
+  })
+
+  it('url() sigue cacheando la ObjectURL igual después de una consulta en bloque', async () => {
+    const db = nuevaDb()
+    let creadas = 0
+    const create = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(() => `blob:plantapps/byids/${(creadas += 1)}`)
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const foto = await db.photos.put(fotoFalsa([3, 4]))
+
+    // Recuperar la foto en bloque ni gasta ni suelta ninguna URL.
+    const [recuperada] = await db.photos.byIds([foto.id])
+    expect(recuperada?.id).toBe(foto.id)
+    expect(create).not.toHaveBeenCalled()
+    expect(revoke).not.toHaveBeenCalled()
+
+    // La caché de urls sigue igual: dos llamadas, la misma url, una sola creación.
+    const url = await db.photos.url(foto.id)
+    expect(await db.photos.url(foto.id)).toBe(url)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(await db.photos.url('no-existe')).toBeUndefined()
+
+    db.photos.release(foto.id)
+    expect(revoke).toHaveBeenCalledWith(url)
+    expect(await db.photos.url(foto.id)).toBe('blob:plantapps/byids/2')
+  })
+
+  it('devuelve lo mismo que la implementación en memoria', async () => {
+    const memoria = createMemoryDb()
+    const db = nuevaDb()
+    const crudo = getRawStore(db)
+    if (!crudo) throw new Error('la base con Dexie debe ofrecer acceso en crudo')
+
+    // Las mismas cuatro fotos, con los mismos ids, en las dos implementaciones.
+    const fotos: StoredPhoto[] = []
+    for (let i = 1; i <= 4; i += 1) {
+      fotos.push(
+        await memoria.photos.put(fotoFalsa([i, i]), {
+          thumb: fotoFalsa([i]),
+          width: i * 10,
+          height: i * 5,
+        }),
+      )
+    }
+    const [f1, f2, f3, f4] = fotos
+    await crudo.writeAll({ plants: [], events: [], analyses: [], guias: [], fotos })
+
+    // La segunda no se pide: así se ve que byIds tampoco devuelve fotos de más.
+    const pedido = [f3.id, f1.id, 'no-existe', f4.id]
+    const enMemoria = (await memoria.photos.byIds(pedido)).map((f) => f.id)
+    const enDexie = (await db.photos.byIds(pedido)).map((f) => f.id)
+
+    expect(enDexie).toEqual([f3.id, f1.id, f4.id])
+    expect(enDexie).not.toContain(f2.id)
+    expect(enDexie).toEqual(enMemoria)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// El camino entero del progreso visual: planta -> análisis -> fotos en bloque
+// ---------------------------------------------------------------------------
+
+/**
+ * El mismo camino que recorre el hook `useFotosProgreso` de `src/db/context.tsx`,
+ * pero sin React: lo que se prueba aquí es el camino de datos contra la base
+ * real, no el hook (eso es de la capa de interfaz).
+ */
+async function fotosProgreso(db: Db, plantId: ID | undefined): Promise<FotoProgreso[]> {
+  if (!plantId) return []
+  const planta = await db.plants.get(plantId)
+  if (!planta) return []
+
+  const analisis = await db.analyses.listByPlant(plantId)
+  const fotos = await db.photos.byIds(
+    analisis.map((a) => a.photoId).filter((id): id is ID => Boolean(id)),
+  )
+  const porId = new Map(fotos.map((f) => [f.id, f]))
+
+  const entradas: FotoProgreso[] = []
+  for (const a of analisis) {
+    if (!a.photoId || !porId.has(a.photoId)) continue
+    entradas.push({
+      id: a.photoId,
+      fecha: a.fecha,
+      origen: 'analisis',
+      analysisId: a.id,
+      veredicto: a.veredicto,
+    })
+  }
+
+  if (planta.fotoPortadaId && porId.has(planta.fotoPortadaId)) {
+    // La portada va la primera si no es ya la del análisis más reciente.
+    const yaEstaba = entradas[0]?.id === planta.fotoPortadaId
+    if (!yaEstaba) {
+      entradas.unshift({ id: planta.fotoPortadaId, fecha: planta.actualizadoEn, origen: 'portada' })
+    }
+  }
+
+  return entradas
+}
+
+describe('Camino del progreso visual contra la base real (plants -> analyses -> photos.byIds)', () => {
+  it('una planta con 3 análisis y 3 fotos distintas saca las 3, de más reciente a más antigua', async () => {
+    const db = nuevaDb()
+    const planta = await db.plants.create({ nombre: 'Monstera del salón' })
+    const foto1 = await db.photos.put(fotoFalsa([1]))
+    const foto2 = await db.photos.put(fotoFalsa([2]))
+    const foto3 = await db.photos.put(fotoFalsa([3]))
+
+    const a1 = await db.analyses.create({
+      ...borradorAnalisis,
+      veredicto: 'regar',
+      plantId: planta.id,
+      photoId: foto1.id,
+      modelo: 'gemini-3.6-flash',
+    })
+    await esperar(5)
+    const a2 = await db.analyses.create({
+      ...borradorAnalisis,
+      veredicto: 'problema',
+      gravedad: 'moderada',
+      regar: false,
+      plantId: planta.id,
+      photoId: foto2.id,
+      modelo: 'gemini-3.6-flash',
+    })
+    await esperar(5)
+    const a3 = await db.analyses.create({
+      ...borradorAnalisis,
+      veredicto: 'todo_ok',
+      regar: false,
+      plantId: planta.id,
+      photoId: foto3.id,
+      modelo: 'gemini-3.6-flash',
+    })
+
+    const progreso = await fotosProgreso(db, planta.id)
+
+    expect(progreso.map((p) => p.id)).toEqual([foto3.id, foto2.id, foto1.id])
+    expect(progreso.map((p) => p.origen)).toEqual(['analisis', 'analisis', 'analisis'])
+    expect(progreso.map((p) => p.analysisId)).toEqual([a3.id, a2.id, a1.id])
+    expect(progreso.map((p) => p.veredicto)).toEqual(['todo_ok', 'problema', 'regar'])
+    expect(progreso.map((p) => p.fecha)).toEqual([a3.fecha, a2.fecha, a1.fecha])
+  })
+
+  it('un análisis cuya foto se borró se omite y no rompe el camino', async () => {
+    const db = nuevaDb()
+    const planta = await db.plants.create({ nombre: 'Poto' })
+    const fotoBuena = await db.photos.put(fotoFalsa([1]))
+    const fotoBorrada = await db.photos.put(fotoFalsa([2]))
+
+    await db.analyses.create({
+      ...borradorAnalisis,
+      plantId: planta.id,
+      photoId: fotoBorrada.id,
+      modelo: 'gemini-3.6-flash',
+    })
+    await esperar(5)
+    const analisisBueno = await db.analyses.create({
+      ...borradorAnalisis,
+      plantId: planta.id,
+      photoId: fotoBuena.id,
+      modelo: 'gemini-3.6-flash',
+    })
+    await db.photos.remove(fotoBorrada.id)
+
+    const progreso = await fotosProgreso(db, planta.id)
+
+    expect(progreso.map((p) => p.id)).toEqual([fotoBuena.id])
+    expect(progreso.map((p) => p.analysisId)).toEqual([analisisBueno.id])
+    // El análisis sigue en el historial: lo que falta es su foto.
+    expect(await db.analyses.listByPlant(planta.id)).toHaveLength(2)
+    expect(await db.photos.byIds([fotoBorrada.id])).toEqual([])
+  })
+
+  it('una planta sin análisis no devuelve nada, aunque haya fotos de otras plantas', async () => {
+    const db = nuevaDb()
+    const planta = await db.plants.create({ nombre: 'Lavanda' })
+    const otra = await db.plants.create({ nombre: 'Otra' })
+    const fotoOtra = await db.photos.put(fotoFalsa([5]))
+    await db.analyses.create({
+      ...borradorAnalisis,
+      plantId: otra.id,
+      photoId: fotoOtra.id,
+      modelo: 'gemini-3.6-flash',
+    })
+    const fotoSuelta = await db.photos.put(fotoFalsa([6]))
+
+    expect(await fotosProgreso(db, planta.id)).toEqual([])
+
+    // Y las fotos sueltas sí se recuperan cuando se piden: la consulta no
+    // depende de que haya análisis.
+    expect((await db.photos.byIds([fotoSuelta.id, fotoOtra.id])).map((f) => f.id)).toEqual([
+      fotoSuelta.id,
+      fotoOtra.id,
+    ])
+    // Plantas que no existen y la ausencia de planta tampoco fallan.
+    expect(await fotosProgreso(db, 'planta-fantasma')).toEqual([])
+    expect(await fotosProgreso(db, undefined)).toEqual([])
+  })
+
+  it('una planta con portada y sin análisis recupera la portada por su cuenta', async () => {
+    const db = nuevaDb()
+    const planta = await db.plants.create({ nombre: 'Cactus' })
+    const portada = await db.photos.put(fotoFalsa([9]))
+    await db.plants.setFotoPortada(planta.id, portada.id)
+
+    // El camino del hook solo mira los análisis de la planta: sin ninguno, la
+    // galería sale vacía. No es un fallo de byIds, es lo que hace el hook.
+    expect(await fotosProgreso(db, planta.id)).toEqual([])
+
+    // La portada se recupera sola, pidiéndola directamente en bloque.
+    const [recuperada] = await db.photos.byIds([portada.id])
+    expect(recuperada?.id).toBe(portada.id)
+    expect(recuperada?.mime).toBe('image/jpeg')
+    expect(recuperada?.bytes).toBe(1)
+    expect(await bytesDe(recuperada?.blob ?? new Blob())).toEqual([9])
+    // Y se puede pedir junto a otras sin que ninguna se pierda.
+    const portadaYAnalisis = await db.photos.byIds([portada.id, portada.id])
+    expect(portadaYAnalisis).toHaveLength(1)
+    expect(portadaYAnalisis[0]?.id).toBe(portada.id)
+  })
+
+  it('la portada no se duplica si ya es la del análisis más reciente', async () => {
+    const db = nuevaDb()
+    const planta = await db.plants.create({ nombre: 'Ficus' })
+    const portada = await db.photos.put(fotoFalsa([1]))
+    await db.plants.setFotoPortada(planta.id, portada.id)
+    await esperar(5)
+    const analisis = await db.analyses.create({
+      ...borradorAnalisis,
+      plantId: planta.id,
+      photoId: portada.id,
+      modelo: 'gemini-3.6-flash',
+    })
+
+    const progreso = await fotosProgreso(db, planta.id)
+
+    expect(progreso).toHaveLength(1)
+    expect(progreso[0]?.id).toBe(portada.id)
+    expect(progreso[0]?.origen).toBe('analisis')
+    expect(progreso[0]?.analysisId).toBe(analisis.id)
+  })
+
+  it('una galería de verdad, con 200 análisis y 200 fotos, las recupera todas', async () => {
+    const db = nuevaDb()
+    const planta = await db.plants.create({ nombre: 'Monstera del salón' })
+
+    const idsFotos: ID[] = []
+    for (let i = 0; i < 200; i += 1) {
+      idsFotos.push((await db.photos.put(fotoFalsa([i % 251]))).id)
+    }
+    for (const photoId of idsFotos) {
+      await db.analyses.create({
+        ...borradorAnalisis,
+        plantId: planta.id,
+        photoId,
+        modelo: 'gemini-3.6-flash',
+      })
+    }
+
+    const analisis = await db.analyses.listByPlant(planta.id)
+    const fotos = await db.photos.byIds(analisis.map((a) => a.photoId))
+    const progreso = await fotosProgreso(db, planta.id)
+
+    expect(analisis).toHaveLength(200)
+    expect(fotos).toHaveLength(200)
+    expect(progreso).toHaveLength(200)
+    // Ni sobra ni falta ninguna: las pedidas y las devueltas son las mismas.
+    expect([...fotos.map((f) => f.id)].sort()).toEqual([...idsFotos].sort())
+    expect([...progreso.map((p) => p.id)].sort()).toEqual([...idsFotos].sort())
   })
 })
