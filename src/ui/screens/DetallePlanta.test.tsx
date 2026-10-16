@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
-import type { AiAnalysisDraft, GuiaCuidadosDraft, IdentificacionDraft } from '@/types'
+import { screen, waitFor, within } from '@testing-library/react'
+import type { AiAnalysisDraft, GuiaCuidadosDraft, ID, IdentificacionDraft } from '@/types'
 import type { Db } from '@/services/contracts'
 
 // La IA y la cámara se simulan: aquí no hay red ni archivos reales.
@@ -22,7 +22,8 @@ vi.mock('@/services/photos', () => ({
 const { aiService } = await import('@/services/ai')
 const { DetallePlanta } = await import('./DetallePlanta')
 const { dbDePrueba, espiarObjectURL, haceDias, renderConDb, usuario } = await import('./entornoPrueba')
-const { AiError, EVENTO_LABELS, VEREDICTO_LABELS } = await import('@/types')
+const { AiError, EVENTO_LABELS, TENDENCIA_LABELS, VEREDICTO_LABELS } = await import('@/types')
+const { formatDateEs } = await import('@/lib/dates')
 
 const BORRADOR: AiAnalysisDraft = {
   veredicto: 'regar',
@@ -82,6 +83,55 @@ const SIN_RECONOCER: IdentificacionDraft = {
 }
 
 const PATRON = '/planta/:id'
+
+/** Lo que dice la IA cuando ha podido comparar las dos fotos. */
+const CON_COMPARACION: AiAnalysisDraft = {
+  ...BORRADOR,
+  comparacion: {
+    tendencia: 'mejor',
+    detalle: 'Han salido dos hojas nuevas y ya no hay hojas amarillas.',
+    habiaAnterior: true,
+  },
+}
+
+/** Lo que dice cuando las fotos no se parecían y no puede afirmar nada. */
+const SIN_PODER_COMPARAR: AiAnalysisDraft = {
+  ...BORRADOR,
+  comparacion: {
+    tendencia: 'igual',
+    detalle: 'La foto anterior era de otro ángulo, así que no se puede decir.',
+    habiaAnterior: false,
+  },
+}
+
+/**
+ * Un análisis que ya está guardado, con su foto y su evento en el historial.
+ * Es lo que convierte una planta en "con análisis previo".
+ */
+async function analisisGuardado(db: Db, plantId: ID) {
+  const foto = await db.photos.put(new Blob(['la-foto-de-antes'], { type: 'image/jpeg' }))
+  const analisis = await db.analyses.create({
+    ...BORRADOR,
+    plantId,
+    photoId: foto.id,
+    modelo: 'gemini-3.6-flash',
+  })
+  await db.events.create({
+    plantId,
+    tipo: 'analisis',
+    fecha: analisis.fecha,
+    analysisId: analisis.id,
+    nota: analisis.resumen,
+  })
+  return { analisis, foto }
+}
+
+/** La sección "Progreso", que es una `<section>` propia dentro de la ficha. */
+function seccionProgreso(): HTMLElement {
+  const seccion = screen.getByRole('heading', { name: 'Progreso' }).closest('section')
+  if (!seccion) throw new Error('No se encuentra la sección de progreso')
+  return seccion
+}
 
 beforeEach(() => {
   vi.mocked(aiService.analyze).mockReset()
@@ -635,5 +685,227 @@ describe('<DetallePlanta>', () => {
     expect(screen.getByText(/Identificar plantas también usa la IA/i)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Ir a Ajustes/i })).toHaveAttribute('href', '/ajustes')
     expect(screen.queryByRole('radio', { name: 'Cámara' })).not.toBeInTheDocument()
+  })
+
+  // -------------------------------------------------------------------------
+  // Progreso: la tira de fotos de la planta
+  // -------------------------------------------------------------------------
+
+  it('enseña la galería con una foto por análisis y su fecha', async () => {
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Monstera del salón' })
+    const primero = await analisisGuardado(db, planta.id)
+    const segundo = await analisisGuardado(db, planta.id)
+
+    renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+    expect(await screen.findByRole('heading', { name: 'Progreso' })).toBeInTheDocument()
+
+    // Las dos fotos del historial visual, y solo ellas: manda la sección, no la
+    // lista de eventos, que también es una lista.
+    await waitFor(() => expect(within(seccionProgreso()).getAllByRole('listitem')).toHaveLength(2))
+
+    // Y cada miniatura lleva debajo la fecha de su análisis, en castellano.
+    const fechas = new Set([primero.analisis.fecha, segundo.analisis.fecha].map(formatDateEs))
+    for (const fecha of fechas) {
+      expect(within(seccionProgreso()).getAllByText(fecha).length).toBeGreaterThan(0)
+    }
+  })
+
+  it('sin ningún análisis, la galería explica para qué sirve y no se rompe', async () => {
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Helecho nuevo' })
+
+    renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+    expect(await screen.findByText(/Cada análisis guarda una foto/i)).toBeInTheDocument()
+    expect(within(seccionProgreso()).queryByRole('listitem')).not.toBeInTheDocument()
+    // La ficha sigue entera: el nombre y el resto de la planta de siempre.
+    expect(screen.getByRole('heading', { name: 'Helecho nuevo' })).toBeInTheDocument()
+  })
+
+  it('con más fotos que las visibles, "Ver todas (N)" las enseña sin salir de la sección', async () => {
+    const user = usuario()
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Palmera del salón' })
+    for (let i = 0; i < 5; i += 1) await analisisGuardado(db, planta.id)
+
+    renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+    await screen.findByRole('heading', { name: 'Progreso' })
+    await waitFor(() => expect(within(seccionProgreso()).getAllByRole('listitem')).toHaveLength(4))
+
+    await user.click(screen.getByRole('button', { name: 'Ver todas (5)' }))
+
+    expect(within(seccionProgreso()).getAllByRole('listitem')).toHaveLength(5)
+    expect(screen.getByRole('button', { name: 'Ver menos' })).toBeInTheDocument()
+  })
+
+  // -------------------------------------------------------------------------
+  // Comparar con la foto anterior
+  // -------------------------------------------------------------------------
+
+  it('sin análisis previos no ofrece comparar: no hay foto con la que hacerlo', async () => {
+    const user = usuario()
+    const db = dbDePrueba()
+    await db.settings.save({ apiKey: 'AIza-de-prueba' })
+    const planta = await db.plants.create({ nombre: 'Poto del pasillo' })
+
+    renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+    await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
+
+    expect(screen.queryByRole('switch', { name: 'Comparar con la foto anterior' })).not.toBeInTheDocument()
+  })
+
+  it('activado el interruptor manda las dos fotos y cuándo se hizo la anterior', async () => {
+    const user = usuario()
+    vi.mocked(aiService.analyze).mockResolvedValue(CON_COMPARACION)
+    const espia = espiarObjectURL()
+
+    try {
+      const db = dbDePrueba()
+      await db.settings.save({ apiKey: 'AIza-de-prueba' })
+      const planta = await db.plants.create({ nombre: 'Monstera del salón' })
+      const previo = await analisisGuardado(db, planta.id)
+
+      renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+      await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
+      const interruptor = await screen.findByRole('switch', { name: 'Comparar con la foto anterior' })
+      // Apagado de salida: ni una imagen de más sin pedirla.
+      expect(interruptor).toHaveAttribute('aria-checked', 'false')
+
+      await user.click(interruptor)
+      expect(interruptor).toHaveAttribute('aria-checked', 'true')
+
+      await user.click(screen.getByRole('radio', { name: 'Cámara' }))
+      await user.click(await screen.findByRole('button', { name: /^Analizar$/i }))
+
+      await waitFor(() => expect(aiService.analyze).toHaveBeenCalledTimes(1))
+      const enviado = vi.mocked(aiService.analyze).mock.calls[0]?.[0]
+      expect(enviado?.comparar).toBe(true)
+      expect(enviado?.fechaAnterior).toBe(previo.analisis.fecha)
+      expect(enviado?.fotoAnterior).toBeInstanceOf(Blob)
+      expect(await (enviado?.fotoAnterior as Blob).text()).toContain('la-foto-de-antes')
+    } finally {
+      espia.restore()
+    }
+  })
+
+  it('con el interruptor apagado se analiza sin comparar, aunque haya análisis previos', async () => {
+    const user = usuario()
+    vi.mocked(aiService.analyze).mockResolvedValue(BORRADOR)
+    const espia = espiarObjectURL()
+
+    try {
+      const db = dbDePrueba()
+      await db.settings.save({ apiKey: 'AIza-de-prueba' })
+      const planta = await db.plants.create({ nombre: 'Monstera del salón' })
+      await analisisGuardado(db, planta.id)
+
+      renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+      await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
+      expect(await screen.findByRole('switch', { name: 'Comparar con la foto anterior' })).toHaveAttribute(
+        'aria-checked',
+        'false',
+      )
+
+      await user.click(screen.getByRole('radio', { name: 'Cámara' }))
+      await user.click(await screen.findByRole('button', { name: /^Analizar$/i }))
+
+      await waitFor(() => expect(aiService.analyze).toHaveBeenCalledTimes(1))
+      const enviado = vi.mocked(aiService.analyze).mock.calls[0]?.[0]
+      expect(enviado?.comparar).toBeFalsy()
+      expect(enviado?.fotoAnterior).toBeUndefined()
+      expect(enviado?.fechaAnterior).toBeUndefined()
+    } finally {
+      espia.restore()
+    }
+  })
+
+  it('con comparación en la respuesta, la tarjeta dice la tendencia antes de los consejos', async () => {
+    const user = usuario()
+    vi.mocked(aiService.analyze).mockResolvedValue(CON_COMPARACION)
+    const espia = espiarObjectURL()
+
+    try {
+      const db = dbDePrueba()
+      await db.settings.save({ apiKey: 'AIza-de-prueba' })
+      const planta = await db.plants.create({ nombre: 'Monstera del salón' })
+      await analisisGuardado(db, planta.id)
+
+      renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+      await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
+      await user.click(screen.getByRole('radio', { name: 'Cámara' }))
+      await user.click(await screen.findByRole('button', { name: /^Analizar$/i }))
+
+      const detalle = await screen.findByText(CON_COMPARACION.comparacion?.detalle ?? '')
+      // El título de la tarjeta lleva el emoji de la tendencia delante.
+      expect(detalle.parentElement).toHaveTextContent(TENDENCIA_LABELS.mejor)
+
+      // Va después de la acción principal y antes de "qué hacer".
+      const orden = Array.from(document.querySelectorAll('p')).map((n) => n.textContent ?? '')
+      const dondeDetalle = orden.findIndex((texto) => texto.includes(CON_COMPARACION.comparacion?.detalle ?? ''))
+      expect(dondeDetalle).toBeGreaterThan(orden.findIndex((t) => t.includes(BORRADOR.accionPrincipal)))
+      expect(dondeDetalle).toBeLessThan(orden.findIndex((t) => t === 'Qué hacer'))
+    } finally {
+      espia.restore()
+    }
+  })
+
+  it('si la IA no puede comparar, la tarjeta es neutra y no dice que siga igual', async () => {
+    const user = usuario()
+    vi.mocked(aiService.analyze).mockResolvedValue(SIN_PODER_COMPARAR)
+    const espia = espiarObjectURL()
+
+    try {
+      const db = dbDePrueba()
+      await db.settings.save({ apiKey: 'AIza-de-prueba' })
+      const planta = await db.plants.create({ nombre: 'Monstera del salón' })
+      await analisisGuardado(db, planta.id)
+
+      renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+      await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
+      await user.click(screen.getByRole('radio', { name: 'Cámara' }))
+      await user.click(await screen.findByRole('button', { name: /^Analizar$/i }))
+
+      const detalle = await screen.findByText(SIN_PODER_COMPARAR.comparacion?.detalle ?? '')
+      expect(detalle.parentElement).toHaveTextContent('Sin comparación')
+      expect(screen.getAllByText(/no he podido comparar/i).length).toBeGreaterThan(0)
+      // Ni en la tarjeta ni en el resumen del historial: no se insinúa que todo
+      // esté bien cuando en realidad no se ha podido mirar.
+      expect(screen.queryByText(TENDENCIA_LABELS.igual)).not.toBeInTheDocument()
+      expect(screen.queryByText(TENDENCIA_LABELS.mejor)).not.toBeInTheDocument()
+    } finally {
+      espia.restore()
+    }
+  })
+
+  it('el historial resume la comparación del análisis', async () => {
+    const user = usuario()
+    vi.mocked(aiService.analyze).mockResolvedValue(CON_COMPARACION)
+    const espia = espiarObjectURL()
+
+    try {
+      const db = dbDePrueba()
+      await db.settings.save({ apiKey: 'AIza-de-prueba' })
+      const planta = await db.plants.create({ nombre: 'Monstera del salón' })
+      await analisisGuardado(db, planta.id)
+
+      renderConDb(<DetallePlanta />, { db, ruta: `/planta/${planta.id}`, patron: PATRON })
+
+      await user.click(await screen.findByRole('button', { name: /Analizar con IA/i }))
+      await user.click(screen.getByRole('radio', { name: 'Cámara' }))
+      await user.click(await screen.findByRole('button', { name: /^Analizar$/i }))
+
+      // La línea corta sale en el resumen del historial, junto al análisis.
+      expect(await screen.findByText(`${TENDENCIA_LABELS.mejor} desde la foto anterior`)).toBeInTheDocument()
+    } finally {
+      espia.restore()
+    }
   })
 })

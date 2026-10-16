@@ -23,7 +23,6 @@ import {
   recordatorioScheduler,
 } from '@/services/recordatorios'
 import { useInstalable } from '@/services/pwa'
-import { cn } from '@/lib/cn'
 import { formatDateEs, nowIso, todayIso } from '@/lib/dates'
 import {
   Badge,
@@ -32,6 +31,7 @@ import {
   ConfirmDialog,
   ErrorBanner,
   Field,
+  Interruptor,
   SegmentedControl,
   Select,
   Spinner,
@@ -87,52 +87,6 @@ const COMO_REACTIVAR =
 
 /** `HH:mm` es lo único que acepta el input de hora; nada más se guarda. */
 const HORA_VALIDA = /^([01]\d|2[0-3]):[0-5]\d$/
-
-interface InterruptorProps {
-  activo: boolean
-  /** Nombre accesible: es el texto que hay al lado, en pantalla. */
-  etiqueta: string
-  deshabilitado?: boolean
-  onChange: (siguiente: boolean) => void
-}
-
-/**
- * Interruptor maestro de los recordatorios.
- *
- * Es un `<button role="switch">` con `aria-checked`: los lectores de pantalla
- * anuncian "activado" o "desactivado" en vez de "pulsado". El botón ocupa 44 px
- * de alto aunque el carril se vea más fino, que es lo que pide el dedo.
- */
-function Interruptor({ activo, etiqueta, deshabilitado = false, onChange }: InterruptorProps) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={activo}
-      aria-label={etiqueta}
-      disabled={deshabilitado}
-      onClick={() => onChange(!activo)}
-      className={cn('tap-target w-16 shrink-0', deshabilitado && 'cursor-not-allowed opacity-55')}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          'relative block h-8 w-14 rounded-full border transition-colors',
-          activo
-            ? 'border-brand-600 bg-brand-600'
-            : 'border-[var(--border-soft)] bg-[var(--border-soft)]',
-        )}
-      >
-        <span
-          className={cn(
-            'absolute top-0.5 left-0.5 size-7 rounded-full bg-white shadow-sm transition-transform',
-            activo && 'translate-x-6',
-          )}
-        />
-      </span>
-    </button>
-  )
-}
 
 /** Lo que hay en `<input type="file">` en ese momento, ya leído y con un vistazo al formato. */
 interface CopiaElegida {

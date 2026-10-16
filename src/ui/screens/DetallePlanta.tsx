@@ -10,11 +10,24 @@
  * Además de mirar la planta, la ficha la explica: una guía de cuidados que se
  * pide una vez y se consulta, y "¿qué planta es?", para cuando el usuario no
  * sabe qué ha comprado.
+ *
+ * Y de dos fotos nuevas: la tira de "Progreso", que enseña cómo ha cambiado la
+ * planta con los meses, y el interruptor de "comparar con la foto anterior",
+ * que le da a la IA las dos fotos para que diga si ha mejorado.
  */
 
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
-import { useAnalyses, useDb, useGuia, usePhotoUrl, usePlant, useSettings, useTimeline } from '@/db/context'
+import {
+  useAnalyses,
+  useDb,
+  useFotosProgreso,
+  useGuia,
+  usePhotoUrl,
+  usePlant,
+  useSettings,
+  useTimeline,
+} from '@/db/context'
 import { aiService } from '@/services/ai'
 import { guardarFoto, pickPhoto } from '@/services/photos'
 import { frecuenciaSugerida } from '@/services/reminders'
@@ -27,9 +40,12 @@ import {
   EmptyState,
   ErrorBanner,
   EstadoRiegoChip,
+  GaleriaProgreso,
+  Interruptor,
   SegmentedControl,
   Sheet,
   Spinner,
+  TarjetaComparacion,
   VeredictoChip,
 } from '@/ui/components'
 import {
@@ -47,6 +63,7 @@ import {
   contextoParaIa,
   fechaLegible,
   guiaDesactualizada,
+  lineaComparacion,
   pistasParaIdentificar,
   resumenCambios,
   tonoConfianza,
@@ -218,6 +235,20 @@ function TarjetaAnalisis({
         <BarraSalud salud={analisis.salud} />
       </div>
 
+      {/*
+        La comparación va justo aquí: es lo primero que se quiere saber ("¿ha
+        mejorado?") y antes de que empiecen las recomendaciones. Si el modelo no
+        pudo comparar, la tarjeta lo dice en neutro y no se adorna.
+      */}
+      {analisis.comparacion ? (
+        <TarjetaComparacion
+          tendencia={analisis.comparacion.tendencia}
+          detalle={analisis.comparacion.detalle}
+          comparable={analisis.comparacion.habiaAnterior}
+          className="mt-3"
+        />
+      ) : null}
+
       <dl className="mt-2 divide-y divide-[var(--border-soft)]">
         <FilaDato etiqueta="Riego">
           {analisis.regar
@@ -262,6 +293,10 @@ function TarjetaAnalisis({
 
 /** La versión corta que aparece dentro del historial. */
 function ResumenAnalisis({ analisis }: { analisis: AiAnalysis }) {
+  // Una línea y ninguna más: el historial es largo y aquí no se reitera el
+  // análisis entero, solo el cambio respecto a la foto anterior.
+  const comparacion = lineaComparacion(analisis)
+
   return (
     <div className="superficie mt-2 p-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -270,6 +305,9 @@ function ResumenAnalisis({ analisis }: { analisis: AiAnalysis }) {
       </div>
       <p className="mt-2 text-sm leading-relaxed text-[var(--text)]">{analisis.resumen}</p>
       <p className="mt-1 text-xs text-[var(--text-muted)]">{analisis.accionPrincipal}</p>
+      {comparacion ? (
+        <p className="mt-1 text-xs font-semibold text-[var(--text)]">{comparacion}</p>
+      ) : null}
     </div>
   )
 }
@@ -459,8 +497,17 @@ export function DetallePlanta() {
   const eventos = useTimeline(plantaId)
   const analisisGuardados = useAnalyses(plantaId)
   const guia = useGuia(plantaId)
+  const fotosProgreso = useFotosProgreso(plantaId)
   const analisisPorId = useMemo(
     () => new Map(analisisGuardados.map((analisis) => [analisis.id, analisis])),
+    [analisisGuardados],
+  )
+  /**
+   * El análisis más reciente con foto: es contra el que se compara. Sin él no
+   * hay con qué comparar y ni se ofrece el interruptor.
+   */
+  const analisisPrevio = useMemo(
+    () => analisisGuardados.find((analisis) => Boolean(analisis.photoId)) ?? null,
     [analisisGuardados],
   )
   const estados = useEstadosRiego(plantaId ? [plantaId] : [])
@@ -477,6 +524,11 @@ export function DetallePlanta() {
   const [error, setError] = useState<ErrorPantalla | null>(null)
   const [registrando, setRegistrando] = useState(false)
   const [confirmado, setConfirmado] = useState(false)
+  /**
+   * Comparar con la foto anterior. Apagado por defecto: son dos imágenes en
+   * cada consulta y no se manda ni una más de las que el usuario pide.
+   */
+  const [comparar, setComparar] = useState(false)
 
   // Estado de la guía de cuidados.
   const [pidiendoGuia, setPidiendoGuia] = useState(false)
@@ -599,6 +651,20 @@ export function DetallePlanta() {
     }
   }
 
+  /**
+   * La foto del análisis anterior y cuándo se hizo, para comparar.
+   *
+   * `null` si el interruptor está apagado, si la planta todavía no tiene
+   * análisis previos o si esa foto ya no está guardada: en los tres casos se
+   * analiza sin comparación, que es mejor que mandar una comparación a medias.
+   */
+  const fotoPrevia = async (): Promise<{ blob: Blob; fecha: string } | null> => {
+    const previo = analisisPrevio
+    if (!comparar || !previo) return null
+    const guardada = await db.photos.get(previo.photoId)
+    return guardada ? { blob: guardada.blob, fecha: previo.fecha } : null
+  }
+
   const analizar = async () => {
     if (!planta || !foto) return
     setAnalizando(true)
@@ -607,7 +673,14 @@ export function DetallePlanta() {
 
     try {
       const contexto = contextoParaIa(planta, eventos, estado)
-      const borrador = await aiService.analyze({ plantId: planta.id, foto, contexto })
+      const previa = await fotoPrevia()
+      const borrador = await aiService.analyze({
+        plantId: planta.id,
+        foto,
+        contexto,
+        // Sin foto anterior no se manda `comparar`: ni una imagen de más.
+        ...(previa ? { comparar: true, fotoAnterior: previa.blob, fechaAnterior: previa.fecha } : {}),
+      })
 
       // La foto se guarda siempre: es la prueba de lo que dijo la IA y
       // sirve de portada si la planta todavía no tenía ninguna.
@@ -883,6 +956,19 @@ export function DetallePlanta() {
         {planta.luz ? <Badge tone="neutro">{LUZ_LABELS[planta.luz]}</Badge> : null}
       </div>
 
+      {/*
+        La tira de progreso va pegada a la foto grande y al nombre, que es donde
+        el usuario está mirando: "esta es ahora, estas son las anteriores". No
+        se cuela entre la foto y el nombre para no esconder de qué planta es
+        todo, y tampoco baja al historial, que ya es largo. Tocar una miniatura
+        no hace nada: se ve lo que hay, sin diálogos por en medio.
+      */}
+      <GaleriaProgreso
+        fotos={fotosProgreso}
+        vacio="Cada análisis guarda una foto. Con el tiempo verás aquí cómo evoluciona la planta."
+        className="mt-4"
+      />
+
       <dl className="mt-3 divide-y divide-[var(--border-soft)]">
         {planta.fechaPlantado ? (
           <FilaDato etiqueta="Plantada">
@@ -1045,6 +1131,29 @@ export function DetallePlanta() {
                   cargando={analizando}
                   className="mt-3"
                 />
+
+                {/*
+                  Solo si hay un análisis previo: sin foto anterior no hay con
+                  qué comparar, y ofrecerlo sería un botón que no puede hacer
+                  nada. Va apagado porque comparar manda dos imágenes.
+                */}
+                {analisisPrevio ? (
+                  <div className="mt-4 flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-base font-semibold text-[var(--text)]">
+                        Comparar con la foto anterior
+                      </p>
+                      <p className="mt-0.5 text-sm text-[var(--text-muted)]">
+                        {`Las dos fotos, para que te diga si ha cambiado desde la del ${formatDateEs(analisisPrevio.fecha)}.`}
+                      </p>
+                    </div>
+                    <Interruptor
+                      activo={comparar}
+                      etiqueta="Comparar con la foto anterior"
+                      onChange={setComparar}
+                    />
+                  </div>
+                ) : null}
 
                 {vistaFoto ? (
                   <Button

@@ -37,12 +37,14 @@ Todo se importa desde aquí: `import { Button, Card, Sheet } from '@/ui/componen
 | `GaleriaProgreso` | `fotos: FotoProgreso[]` · `onAbrir?: (photoId: ID) => void` · `titulo?: string` · `vacio?: string` · `visibles?: number` · `className?` | `<GaleriaProgreso fotos={fotos} onAbrir={(id) => abrirFoto(id)} visibles={4} />` |
 | `TarjetaComparacion` | `tendencia: Tendencia` · `detalle: string` · `comparable: boolean` · `className?` | `<TarjetaComparacion tendencia="mejor" detalle="Han salido dos hojas nuevas" comparable />` |
 | `BotonRegarRapido` | `onClick: () => void` · `cargando?: boolean` · `nombrePlanta: string` · `size?: 'sm'\|'md'` · `className?` | `<BotonRegarRapido nombrePlanta={planta.nombre} cargando={regando} onClick={regar} />` |
+| `Interruptor` | `activo: boolean` · `etiqueta: string` · `deshabilitado?: boolean` · `onChange: (siguiente: boolean) => void` · `className?` | `<Interruptor activo={config.activos} etiqueta="Avisarme cuando toque regar" onChange={cambiar} />` |
 
 ---
 
 ## Detalles que conviene no esquecer
 
 - **Button**: con `loading` se deshabilita solo y pone `aria-busy`. Los tres tamaños respetan 44 px (`sm` 44 · `md` 48 · `lg` 56).
+- **Interruptor**: `<button role="switch">` con `aria-checked`, para que el lector de pantalla anuncie "activado" y no "pulsado". Mide 44 px aunque el carril se vea más fino. Con `deshabilitado` no hace nada al pulsarlo: mejor que no responda a que prometa algo que luego no cumple.
 - **Sheet**: se cierra con la ✕, con `Escape` y tocando fuera; bloquea el scroll del fondo, atrapa el `Tab` y devuelve el foco al botón que la abrió. El `footer` es fijo y respeta la zona segura inferior.
 - **ConfirmDialog** es un `Sheet`: tocar fuera o `Escape` cuenta como cancelar.
 - **Field** conecta solo la etiqueta, la ayuda y el error con el control que lleva dentro (inyecta `id`, `aria-describedby`, `aria-invalid` y `aria-required`). No hace falta pasar ids.

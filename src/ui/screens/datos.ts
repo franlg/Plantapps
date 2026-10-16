@@ -11,8 +11,9 @@ import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import { useDb } from '@/db/context'
 import { daysSince, formatDateEs, relativeEs, todayIso, toDate } from '@/lib/dates'
-import { AiError, EVENTO_LABELS, LUZ_LABELS } from '@/types'
+import { AiError, EVENTO_LABELS, LUZ_LABELS, TENDENCIA_LABELS } from '@/types'
 import type {
+  AiAnalysis,
   AiErrorCode,
   CareEvent,
   Confianza,
@@ -366,6 +367,28 @@ export function resumenCambios(
   if (identificacion.luz) lineas.push(`luz: ${LUZ_LABELS[identificacion.luz].toLowerCase()}`)
 
   return lineas
+}
+
+// ---------------------------------------------------------------------------
+// Comparación con la foto anterior
+// ---------------------------------------------------------------------------
+
+/**
+ * La línea corta que deja una comparación en el historial: "Ha mejorado desde la
+ * foto anterior".
+ *
+ * `null` cuando el análisis no comparó nada (que es la mayoría): entonces el
+ * historial se queda como estaba y no aparece ninguna línea de más.
+ *
+ * Cuando el modelo recibió las dos fotos pero no pudo decidirlas (otro ángulo,
+ * otra luz) se dice exactamente eso. "No he podido mirar" no es "sigue igual",
+ * y escribirlo como si lo fuera sería mentirle al usuario.
+ */
+export function lineaComparacion(analisis: AiAnalysis): string | null {
+  const comparacion = analisis.comparacion
+  if (!comparacion) return null
+  if (!comparacion.habiaAnterior) return 'No he podido comparar con la foto anterior'
+  return `${TENDENCIA_LABELS[comparacion.tendencia]} desde la foto anterior`
 }
 
 // ---------------------------------------------------------------------------

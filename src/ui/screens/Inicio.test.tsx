@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
-import { beforeEach, describe, expect, it } from 'vitest'
-import { screen, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { Inicio } from './Inicio'
 import { dbDePrueba, haceDias, renderConDb, usuario } from './entornoPrueba'
 
@@ -22,6 +22,15 @@ function panelDe(cabecera: HTMLElement): HTMLElement {
 /** Espera a que la cabecera exista: los datos llegan de la base de datos, no de golpe. */
 async function waitForCabecera(titulo: RegExp): Promise<HTMLElement> {
   return screen.findByRole('button', { name: titulo })
+}
+
+/**
+ * El botón de riego rápido de una planta dentro de un contenedor (la sección de
+ * atención o la lista). El componente lo llama así para que un lector de pantalla
+ * no se encuentre con varios botones idénticos llamados solo "Regar".
+ */
+function botonDeRegar(contenedor: HTMLElement, nombre: string): HTMLElement {
+  return within(contenedor).getByRole('button', { name: `Registrar que has regado ${nombre}` })
 }
 
 describe('<Inicio>', () => {
@@ -246,5 +255,228 @@ describe('<Inicio>', () => {
 
     await waitForCabecera(/Requieren atención/i)
     expect(cabecera(/Requieren atención/i)).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  // ---------------------------------------------------------------------------
+  // Riego rápido
+  // ---------------------------------------------------------------------------
+
+  it('una planta vencida lleva su botón de regar en la tarjeta de atención', async () => {
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Ficus del rincón', frecuenciaRiegoDias: 7 })
+    await db.events.create({ plantId: planta.id, tipo: 'riego', fecha: haceDias(21) })
+
+    renderConDb(<Inicio />, { db, ruta: '/' })
+
+    const seccion = await screen.findByRole('region', { name: /Requieren atención/i })
+    const boton = botonDeRegar(seccion, planta.nombre)
+    expect(boton).toBeInTheDocument()
+    expect(boton).toBeEnabled()
+    expect(boton).toHaveTextContent('Regar')
+    // Y el nombre de la planta sigue siendo pulsable para abrir su ficha.
+    expect(within(seccion).getByRole('button', { name: /^Ficus del rincón/ })).toBeInTheDocument()
+    // El botón de regar va **fuera** de la zona pulsable: un botón dentro de un
+    // botón no es HTML válido y el clic acabaría en el elemento equivocado.
+    expect(document.querySelector('button button')).toBeNull()
+  })
+
+  it('pulsar regar guarda el riego con la fecha de hoy en esa planta', async () => {
+    const user = usuario()
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Ficus del rincón', frecuenciaRiegoDias: 7 })
+    await db.events.create({ plantId: planta.id, tipo: 'riego', fecha: haceDias(21) })
+
+    renderConDb(<Inicio />, { db, ruta: '/' })
+
+    const seccion = await screen.findByRole('region', { name: /Requieren atención/i })
+    await user.click(botonDeRegar(seccion, planta.nombre))
+
+    const riegos = (await db.events.listByPlant(planta.id)).filter((evento) => evento.tipo === 'riego')
+    expect(riegos).toHaveLength(2)
+    expect(riegos[0]?.fecha.slice(0, 10)).toBe(haceDias(0).slice(0, 10))
+  })
+
+  it('mientras se guarda, ese botón muestra el spinner y queda deshabilitado', async () => {
+    const user = usuario()
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Ficus del rincón', frecuenciaRiegoDias: 7 })
+    await db.events.create({ plantId: planta.id, tipo: 'riego', fecha: haceDias(21) })
+
+    // El guardado se queda a medias hasta que la prueba lo deja continuar: así se
+    // puede mirar el botón en pleno trabajo sin pelearse con los tiempos.
+    const guardar = db.events.create.bind(db.events)
+    let continuar: () => void = () => undefined
+    const espera = new Promise<void>((resolver) => {
+      continuar = resolver
+    })
+    vi.spyOn(db.events, 'create').mockImplementation(async (evento) => {
+      await espera
+      return guardar(evento)
+    })
+
+    renderConDb(<Inicio />, { db, ruta: '/' })
+
+    const seccion = await screen.findByRole('region', { name: /Requieren atención/i })
+    await user.click(botonDeRegar(seccion, planta.nombre))
+
+    const enCurso = botonDeRegar(seccion, planta.nombre)
+    expect(enCurso).toBeDisabled()
+    expect(enCurso).toHaveAttribute('aria-busy', 'true')
+    expect(within(enCurso).getByText('Registrando el riego')).toBeInTheDocument()
+
+    await act(async () => {
+      continuar()
+    })
+
+    // Al terminar, la planta ya no necesita agua y sale de la sección.
+    await waitFor(() => {
+      expect(screen.queryByRole('region', { name: /Requieren atención/i })).not.toBeInTheDocument()
+    })
+  })
+
+  it('tras regar la planta sale de "Requieren atención" y avisa de que quedó guardado', async () => {
+    const user = usuario()
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Ficus del rincón', frecuenciaRiegoDias: 7 })
+    await db.events.create({ plantId: planta.id, tipo: 'riego', fecha: haceDias(21) })
+
+    renderConDb(<Inicio />, { db, ruta: '/' })
+
+    const seccion = await screen.findByRole('region', { name: /Requieren atención/i })
+    await user.click(botonDeRegar(seccion, planta.nombre))
+
+    // El refetch automático se lleva la planta: no queda nada que mirar.
+    await waitFor(() => {
+      expect(screen.queryByRole('region', { name: /Requieren atención/i })).not.toBeInTheDocument()
+    })
+    expect(screen.getByText(/Nada urgente ahora mismo/i)).toBeInTheDocument()
+
+    // En la lista se ve al día, sin recargar, y con el aviso de que se guardó.
+    expect(await screen.findByText('Al día')).toBeInTheDocument()
+    expect(await screen.findByText('Riego registrado')).toBeInTheDocument()
+  })
+
+  it('el aviso de riego registrado se quita solo', async () => {
+    // Con reloj falso, porque el aviso dura unos segundos y no se va a esperar a
+    // que pasen de verdad. Aquí no se usan `findBy*` ni `waitFor`: con el reloj
+    // falso no esperan, así que el tiempo se avanza a mano.
+    vi.useFakeTimers()
+    try {
+      const db = dbDePrueba()
+      const planta = await db.plants.create({ nombre: 'Ficus del rincón', frecuenciaRiegoDias: 7 })
+      await db.events.create({ plantId: planta.id, tipo: 'riego', fecha: haceDias(21) })
+
+      renderConDb(<Inicio />, { db, ruta: '/' })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      fireEvent.click(botonDeRegar(screen.getByRole('region', { name: /Requieren atención/i }), planta.nombre))
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(screen.getByText('Riego registrado')).toBeInTheDocument()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000)
+      })
+      expect(screen.queryByText('Riego registrado')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('una planta al día no lleva botón de regar', async () => {
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Poto', frecuenciaRiegoDias: 10 })
+    await db.events.create({ plantId: planta.id, tipo: 'riego', fecha: haceDias(1) })
+
+    renderConDb(<Inicio />, { db, ruta: '/' })
+
+    // El chip llega un instante después que la lista: es asíncrono.
+    expect(await screen.findByText('Al día')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Registrar que has regado/i })).not.toBeInTheDocument()
+    expect(screen.queryByText('Regar')).not.toBeInTheDocument()
+  })
+
+  it('una planta nunca regada también puede regarse desde la lista', async () => {
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Cactus del despacho' })
+
+    renderConDb(<Inicio />, { db, ruta: '/' })
+
+    const lista = await screen.findByRole('region', { name: /Todas tus plantas/i })
+    await waitFor(() => {
+      expect(botonDeRegar(lista, planta.nombre)).toBeInTheDocument()
+    })
+    // Y sale en "Requieren atención", que es donde primero se mira.
+    const seccion = await screen.findByRole('region', { name: /Requieren atención/i })
+    expect(botonDeRegar(seccion, planta.nombre)).toBeInTheDocument()
+  })
+
+  it('regar desde inicio no abre la ficha, pero el nombre de la tarjeta sí', async () => {
+    const user = usuario()
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Ficus del rincón', frecuenciaRiegoDias: 7 })
+    await db.events.create({ plantId: planta.id, tipo: 'riego', fecha: haceDias(21) })
+
+    renderConDb(<Inicio />, { db, ruta: '/' })
+
+    const seccion = await screen.findByRole('region', { name: /Requieren atención/i })
+    await user.click(botonDeRegar(seccion, planta.nombre))
+
+    // El botón de regar no navega: seguimos en la pantalla de inicio.
+    expect(screen.queryByText('Otra pantalla')).not.toBeInTheDocument()
+
+    const lista = await screen.findByRole('region', { name: /Todas tus plantas/i })
+    await user.click(within(lista).getByRole('button', { name: /^Ficus del rincón/ }))
+
+    expect(await screen.findByText('Otra pantalla')).toBeInTheDocument()
+  })
+
+  it('si el riego no se puede guardar avisa arriba y deja la planta como estaba', async () => {
+    const user = usuario()
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Ficus del rincón', frecuenciaRiegoDias: 7 })
+    await db.events.create({ plantId: planta.id, tipo: 'riego', fecha: haceDias(21) })
+    vi.spyOn(db.events, 'create').mockRejectedValue(new Error('no hay espacio en el dispositivo'))
+
+    renderConDb(<Inicio />, { db, ruta: '/' })
+
+    const seccion = await screen.findByRole('region', { name: /Requieren atención/i })
+    await user.click(botonDeRegar(seccion, planta.nombre))
+
+    const alerta = await screen.findByRole('alert')
+    expect(alerta).toHaveTextContent(/no se ha podido registrar el riego/i)
+    expect(alerta).toHaveTextContent(/inténtalo otra vez/i)
+    expect(alerta).toHaveTextContent('no hay espacio en el dispositivo')
+
+    // Ni se pierde el riego de antes ni se va la planta: se puede reintentar.
+    expect(await db.events.listByPlant(planta.id)).toHaveLength(1)
+    await waitFor(() => {
+      expect(botonDeRegar(seccion, planta.nombre)).toBeEnabled()
+    })
+    expect(screen.queryByText('Riego registrado')).not.toBeInTheDocument()
+  })
+
+  it('el aviso de error se puede cerrar', async () => {
+    const user = usuario()
+    const db = dbDePrueba()
+    const planta = await db.plants.create({ nombre: 'Ficus del rincón', frecuenciaRiegoDias: 7 })
+    await db.events.create({ plantId: planta.id, tipo: 'riego', fecha: haceDias(21) })
+    vi.spyOn(db.events, 'create').mockRejectedValue(new Error('no hay espacio en el dispositivo'))
+
+    renderConDb(<Inicio />, { db, ruta: '/' })
+
+    const seccion = await screen.findByRole('region', { name: /Requieren atención/i })
+    await user.click(botonDeRegar(seccion, planta.nombre))
+    await screen.findByRole('alert')
+
+    await user.click(screen.getByRole('button', { name: /cerrar/i }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
   })
 })

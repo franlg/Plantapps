@@ -59,6 +59,8 @@ export type { AcordeonProps } from './Acordeon'
 
 export { GaleriaProgreso } from './GaleriaProgreso'
 export type { GaleriaProgresoProps } from './GaleriaProgreso'
+export { Interruptor } from './Interruptor'
+export type { InterruptorProps } from './Interruptor'
 
 export { TarjetaComparacion } from './TarjetaComparacion'
 export type { TarjetaComparacionProps } from './TarjetaComparacion'
