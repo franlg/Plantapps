@@ -124,7 +124,10 @@ async function analizar(input: AiAnalyzeInput): Promise<AiAnalysisDraft> {
   // mirar. Sin foto anterior no se manda nada: el prompt ni menciona la
   // comparación y `comparacion` viene ausente en la respuesta.
   const comparar = input.comparar === true && input.fotoAnterior !== undefined
-  const prompt = construirPrompt(input.contexto, { tieneFotoAnterior: comparar })
+  const prompt = construirPrompt(input.contexto, {
+    tieneFotoAnterior: comparar,
+    fechaAnterior: comparar ? input.fechaAnterior : undefined,
+  })
 
   return conReintento(
     modelos,

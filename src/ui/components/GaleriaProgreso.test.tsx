@@ -38,9 +38,9 @@ describe('<GaleriaProgreso>', () => {
   })
 
   it('con más fotos que `visibles` enseña solo esas y un botón para verlas todas', async () => {
-    montar({ fotos: fotos(6), visibles: 3 })
+    montar({ fotos: fotos(6), visibles: 4 })
 
-    expect(screen.getAllByRole('listitem')).toHaveLength(3)
+    expect(screen.getAllByRole('listitem')).toHaveLength(4)
     const boton = screen.getByRole('button', { name: 'Ver todas (6)' })
     expect(boton).toHaveAttribute('aria-expanded', 'false')
 

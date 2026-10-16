@@ -67,6 +67,11 @@ export interface AiAnalyzeInput {
   fotoAnterior?: Blob
   /** Pedir explícitamente la comparación entre las dos fotos. */
   comparar?: boolean
+  /**
+   * Cuándo se hizo la foto anterior, ISO. Si no viene, el modelo solo sabe que
+   * "fue hace un tiempo", y no puede decir "ha mejorado desde hace 2 meses".
+   */
+  fechaAnterior?: string
 }
 
 /** Cómo ha evolucionado la planta respecto a la última foto. */
